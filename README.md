@@ -10,7 +10,7 @@ A Home Assistant custom integration that **reads data from your already-installe
 
 Solar Fusion does **not** contact any external service. Instead, it reads the sensor entities that your existing forecast integrations (Forecast.Solar, Open-Meteo Solar, Solcast) have already created in your Home Assistant. It then:
 
-1. Reads daily totals and hourly breakdowns from each source's entities
+1. Reads daily totals **and hourly breakdowns** from each source's entities
 2. Tracks how accurate each source has been against your actual PV production
 3. Calibrates forecasts using **isotonic regression** (seasonal, non-linear correction) or linear bias correction depending on available history
 4. Combines the calibrated forecasts using **seasonally-weighted averaging** (better sources in the current season get higher weights)
@@ -59,6 +59,8 @@ The default entity IDs used by each integration are pre-filled. Adjust only if y
 | Open-Meteo Solar | `sensor.energy_production_today` | `sensor.energy_production_tomorrow` |
 | Solcast | `sensor.solcast_pv_forecast_forecast_today` | `sensor.solcast_pv_forecast_forecast_tomorrow` |
 
+**Solcast entity discovery:** Solar Fusion automatically searches the HA entity registry for Solcast sensors, including localised names (e.g. German: `prognose_heute` / `prognose_morgen`). Manual overrides are only needed in unusual setups.
+
 ### Step 3 – Settings
 - **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
 - **Update interval**: How often Solar Fusion re-reads the source entities (default: 60 min).
@@ -69,47 +71,188 @@ All settings can be changed later via **Settings → Devices & Services → Sola
 
 ## Sensors created
 
-With an instance named `Dach`, sensors are named `Solar Fusion Dach – …`. Without a name, the prefix is simply `Solar Fusion –`.
+With an instance named `Dach`, sensors are named `Solar Fusion Dach – …`. Without a name, the prefix is simply `Solar Fusion –`. All sensors belonging to an instance are grouped under a single **device** entry in HA (model: *Adaptive Ensemble Forecaster*).
 
 | Sensor | Unit | Description |
 |--------|------|-------------|
-| `…Fused Today` | kWh | Calibrated, optimised forecast for today |
-| `…Fused Tomorrow` | kWh | Calibrated, optimised forecast for tomorrow |
-| `…Hourly Forecast` | kWh | Combined hourly breakdown (in attributes) |
-| `…Forecast Uncertainty` | % | Disagreement between sources |
-| `…<Source> RMSE` | kWh | Per-source RMSE, bias, MAE and calibration mode |
-| `…Morning Snapshot` | — | 06:00 forecast snapshot used as RMSE reference |
-| `…PV Tagesproduktion` | kWh | Built-in daily production meter (resets at midnight) |
+| `… Fused Today` | kWh | Calibrated, optimised forecast for today |
+| `… Fused Tomorrow` | kWh | Calibrated, optimised forecast for tomorrow |
+| `… Hourly Forecast` | kWh | Combined today+tomorrow hourly breakdown (in attributes) |
+| `… Forecast Uncertainty` | % | Disagreement between sources as % of hourly mean |
+| `… <Source> RMSE` | kWh | Per-source accuracy metrics and calibration status |
+| `… Morning Snapshot` | — | 06:00 forecast snapshot used as RMSE reference |
+| `… PV Tagesproduktion` | kWh | Built-in daily production meter (resets at midnight) |
 
-### Key attributes (RMSE sensor)
+---
+
+### Fused Today / Fused Tomorrow
+
+State: calibrated fused daily total in kWh.
+
+Key attributes:
+
+```yaml
+source_weights:
+  Forecast.Solar: 0.412
+  Open-Meteo Solar Forecast: 0.271
+  Solcast PV Forecast: 0.317
+source_values_kwh:
+  Forecast.Solar: 18.4
+  Open-Meteo Solar Forecast: 17.1
+  Solcast PV Forecast: 19.2
+hourly_forecast_wh:
+  "2026-03-12T06:00": 28.0
+  "2026-03-12T07:00": 165.6
+  ...
+active_sources: [Forecast.Solar, Solcast PV Forecast]
+missing_sources: [Open-Meteo Solar Forecast]
+last_updated: "2026-03-11T14:00:00"
+```
+
+---
+
+### Hourly Forecast
+
+State: combined today + tomorrow total in kWh.
+
+Key attributes:
+
+```yaml
+forecast:
+  "2026-03-11T08:00": 694.0
+  "2026-03-11T09:00": 2374.0
+  ...
+  "2026-03-12T08:00": 521.0
+  ...
+today_kwh: 32.4
+tomorrow_kwh: 28.1
+```
+
+The `forecast` attribute contains both days in a single dict, keyed by ISO hour strings, making it directly usable in ApexCharts or template cards.
+
+---
+
+### Forecast Uncertainty
+
+State: weighted standard deviation of sources as % of the fused hourly mean.
+
+| Range | Interpretation |
+|-------|---------------|
+| < 10 % | Low – sources agree well |
+| 10–25 % | Moderate – some disagreement |
+| 25–50 % | High – sources diverge significantly |
+| ≥ 50 % | Very high – forecast unreliable |
+
+Key attributes:
+
+```yaml
+interpretation: "Low – sources agree well"
+source_weights:
+  Forecast.Solar: 0.412
+  Open-Meteo Solar Forecast: 0.271
+  Solcast PV Forecast: 0.317
+```
+
+---
+
+### Source RMSE sensors (one per source)
+
+State: RMSE in kWh (root mean square error of daily forecast vs. actual production).
+
+| Quality label | RMSE range |
+|---------------|-----------|
+| Excellent | < 0.5 kWh |
+| Good | 0.5–1.0 kWh |
+| Fair | 1.0–2.0 kWh |
+| Poor | ≥ 2.0 kWh |
+
+Key attributes:
 
 ```yaml
 rmse_kwh: 1.24
 mae_kwh: 0.98
-bias_kwh: -0.31
+bias_kwh: -0.31        # negative = source consistently over-forecasts
 days_evaluated: 12
 calibration_mode: "isotonic (23 seasonal pts)"
 weight: 0.63
-today_kwh: 14.2
+today_kwh: 14.2        # raw (uncalibrated) value from this source
 tomorrow_kwh: 11.8
+quality_label: "Fair"
 ```
 
 `calibration_mode` shows which calibration is active:
-- `isotonic (N seasonal pts)` — full non-linear seasonal calibration
-- `linear_bias (N recent pts)` — simple multiplicative correction
-- `none (insufficient data)` — no correction yet, more history needed
 
-### Key attributes (Morning Snapshot sensor)
+| Mode | Condition |
+|------|-----------|
+| `isotonic (N seasonal pts)` | ≥ 20 seasonal records — full non-linear seasonal calibration |
+| `linear_bias (N recent pts)` | ≥ 3 recent records — multiplicative correction capped at ±40 % |
+| `none (insufficient data)` | < 3 records — no correction yet, more history needed |
+
+---
+
+### Morning Snapshot
+
+State: ISO timestamp of today's 06:00 snapshot (`2026-03-11T06:00`), or `pending` if not yet taken.
+
+At **06:00 every day**, Solar Fusion records the raw (uncalibrated) `today_kwh` value from every active source. This frozen value — not the continuously-updated intraday reading — is later used as the reference forecast when calculating RMSE after midnight. This prevents the "cheating effect" where providers silently refine their same-day forecast throughout the day.
+
+If Home Assistant starts **after 06:00** and no snapshot exists yet for today, one is taken on the first data update.
+
+Snapshots are retained for **30 days** and persisted across HA restarts.
+
+Key attributes:
 
 ```yaml
-state: "2026-03-11T06:00"
 snapshot_taken: true
+snapshot_time: "2026-03-11T06:00"
 forecast_solar_kwh: 16.8
-solcast_kwh: 12.55
+solcast_pv_forecast_kwh: 12.55
+open-meteo_solar_forecast_kwh: 15.3
 history:
-  "2026-03-11": {Forecast.Solar: 16.8, Solcast PV Forecast: 12.55}
-  "2026-03-10": {Forecast.Solar: 14.2, Solcast PV Forecast: 11.9}
+  "2026-03-11": {Forecast.Solar: 16.8, Solcast PV Forecast: 12.55, Open-Meteo Solar Forecast: 15.3}
+  "2026-03-10": {Forecast.Solar: 14.2, Solcast PV Forecast: 11.9, Open-Meteo Solar Forecast: 13.7}
+  ...
 ```
+
+The `history` dict is directly usable in ApexCharts / template cards to plot how each source's morning forecast has evolved over time.
+
+---
+
+### PV Tagesproduktion (daily meter)
+
+A built-in daily production meter sensor that replaces the need for an external `utility_meter` helper. It resets automatically at midnight and persists its value across HA restarts.
+
+Supports both sensor types:
+- **`total_increasing`** (lifetime kWh counter): tracks the delta since midnight
+- **Daily-resetting sensors**: passes through the current value directly
+
+When multiple PV sensors are configured, their values are **summed** into a single daily total. This sensor is also used internally by Solar Fusion as the preferred source for nightly accuracy recording.
+
+Key attributes:
+
+```yaml
+date: "2026-03-11"
+source_count: 2
+source_entities:
+  - sensor.pv_dach
+  - sensor.pv_garage
+day_start_sensor_pv_dach: 12453.2
+day_start_sensor_pv_garage: 3821.7
+```
+
+---
+
+## Hourly data sources
+
+Each integration exposes hourly data in a different way. Solar Fusion reads them as follows:
+
+| Source | Attribute | Location |
+|--------|-----------|----------|
+| Forecast.Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
+| Open-Meteo Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
+| Solcast | `detailedHourly` (list `[{period_start, pv_estimate}]`) | On both today and tomorrow sensor |
+
+When no hourly data is available for a day (source provides daily totals only), Solar Fusion builds a synthetic hourly profile: it averages the available `hourly_today` profiles from all sources, or falls back to a Gaussian bell curve peaking at 13:00 with σ = 3 h.
 
 ---
 
@@ -121,10 +264,11 @@ Every update interval:
 
   Calibration per source (priority order):
   2a. Isotonic regression  — if ≥ 20 seasonal data points available
-       Fits a monotone step curve to (forecast → actual) pairs.
-       Seasonal window: current month ± 1 month across all years.
+       Fits a monotone non-decreasing step curve to (forecast → actual) pairs
+       using the pool-adjacent-violators algorithm. No external dependencies.
+       Seasonal window: months within ±1 of the current month, all years.
   2b. Linear bias correction — if ≥ 3 recent data points
-       factor = mean(actual) / mean(forecast), capped at ±40%
+       factor = mean(actual) / mean(forecast), capped at ±40 %
   2c. No correction — insufficient history
 
   Weighting per source:
@@ -132,17 +276,21 @@ Every update interval:
      weight_i = 1 / seasonal_RMSE_i
      Falls back to equal weights if any source has < 3 data points
 
-  Fusion:
-  4. Weighted average per hour slot
-  5. Normalise hourly total to match weighted average of daily totals
+  Hourly fusion:
+  4. Calibrated hourly Wh values fused as weighted average per slot
+  5. Fused hourly total normalised to match weighted average of calibrated
+     daily totals (ensures hourly sum = expected day total)
 
   Uncertainty:
-  6. Weighted standard deviation of source values
+  6. Weighted standard deviation of source values per slot,
      expressed as % of the fused hourly mean
 
-  Nightly (after midnight):
-  7. Compare yesterday's 06:00 morning snapshot against actual production
-  8. Store result in history for future calibration
+  Nightly (after midnight, on first update of the new day):
+  7. Read yesterday's actual production from HA recorder
+     (PV Tagesproduktion meter preferred; falls back to summing PV sensors)
+  8. Compare actual against the 06:00 morning snapshot for each source
+  9. Store (forecast_kwh, actual_kwh) pair in history for each source
+ 10. Invalidate isotonic cache for affected seasonal windows
 ```
 
 After approximately **3 weeks** of history, seasonal weighting and isotonic calibration begin to activate. After **one full year**, seasonal calibration covers all months independently.
@@ -151,11 +299,13 @@ After approximately **3 weeks** of history, seasonal weighting and isotonic cali
 
 ## Multiple instances
 
-Solar Fusion supports multiple instances — one per array, or one combined instance.
+Solar Fusion supports multiple config entries — one per array, or one combined instance.
 
 **Scenario: two arrays with separate production sensors**
 
-The recommended approach is a single combined instance using a [template sensor](https://www.home-assistant.io/integrations/template/) that sums both arrays, or by selecting both PV sensors directly in the settings step (Solar Fusion sums them automatically).
+The recommended approach is a single combined instance, selecting both PV sensors in the settings step (Solar Fusion sums them automatically into the `PV Tagesproduktion` sensor).
+
+Alternatively, use a template sensor:
 
 ```yaml
 # configuration.yaml – optional combined sensor
@@ -168,7 +318,7 @@ template:
            + states('sensor.pv_garage') | float(0) }}
 ```
 
-Note: Solcast combines all configured rooftop sites into a single set of sensors. A separate Solar Fusion instance per array only makes sense if each array has its own Forecast.Solar or Open-Meteo instance configured with the correct azimuth and tilt.
+> **Note:** Solcast combines all configured rooftop sites into a single set of sensors. A separate Solar Fusion instance per array only makes sense if each array has its own Forecast.Solar or Open-Meteo instance configured with the correct azimuth and tilt.
 
 ---
 
@@ -183,7 +333,7 @@ automation:
     at: "22:00:00"
   condition:
     condition: numeric_state
-    entity_id: sensor.solar_fusion_fused_tomorrow
+    entity_id: sensor.solar_fusion_dach_fused_tomorrow
     below: 10
   action:
     service: switch.turn_on
@@ -196,23 +346,33 @@ automation:
 ## Data flow
 
 ```
-Forecast.Solar entities   ──┐
-Open-Meteo Solar entities  ─┼──► Solar Fusion ──► Fused sensors (calibrated)
-Solcast entities           ──┘         │
-                                       ├──► RMSE / uncertainty sensors
-                                       └──► Morning snapshot sensor
+Forecast.Solar entities    ──┐  daily kWh + hourly Wh (wh_hours attr)
+Open-Meteo Solar entities  ──┼──► Solar Fusion ──► Fused Today / Tomorrow sensors
+Solcast entities           ──┘  daily kWh + hourly Wh (detailedHourly attr)    │
+                                        │                                        ├──► Hourly Forecast sensor
+                                        │                                        ├──► Forecast Uncertainty sensor
+                                        │                                        ├──► Source RMSE sensors (×N)
+                                        │                                        └──► Morning Snapshot sensor
 
-Actual PV sensor(s) (opt.) ──────────────► Nightly accuracy recording
+Actual PV sensor(s) (opt.) ──────────────► PV Tagesproduktion (daily meter)
+                                                    │
+                                           Nightly accuracy recording
                                            → isotonic regression update
                                            → seasonal weight update
 ```
 
 ---
 
+## Storage & persistence
+
+All history records, morning snapshots, and isotonic regression caches are persisted in HA's built-in storage (`.storage/solar_fusion_history_<entry_id>`). Data survives HA restarts automatically. Morning snapshots are pruned after 30 days; history records follow the configured rolling window (default: 14 days for RMSE, all seasonal data retained for isotonic fitting).
+
+---
+
 ## Requirements
 
 - Home Assistant 2023.6 or newer
-- The `recorder` integration (enabled by default)
+- The `recorder` integration (enabled by default in HA)
 - At least one supported solar forecast integration installed and providing data
 
 ---

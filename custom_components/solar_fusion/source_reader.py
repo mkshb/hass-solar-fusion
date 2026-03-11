@@ -29,7 +29,8 @@ from .const import (
     OPEN_METEO_ATTR_HOURLY,
     OPEN_METEO_TODAY,
     OPEN_METEO_TOMORROW,
-    SOLCAST_ATTR_DETAILED,
+    SOLCAST_ATTR_DETAILED_TODAY,
+    SOLCAST_ATTR_DETAILED_TOMORROW,
     SOLCAST_ATTR_ESTIMATE,
     SOLCAST_ATTR_PERIOD_START,
     SOLCAST_TODAY,
@@ -232,33 +233,13 @@ def _read_solcast(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceRead
     today_kwh = _parse_float(today_state.state, today_id)
     tomorrow_kwh = _parse_float(tomorrow_state.state, tomorrow_id)
 
-    # Solcast stores the full multi-day detailed forecast on the today sensor
-    detailed = today_state.attributes.get(SOLCAST_ATTR_DETAILED, [])
-    hourly_today: HourlyWh = {}
-    hourly_tomorrow: HourlyWh = {}
-
-    today_str = date.today().isoformat()
-    tomorrow_str = (date.today().replace(day=date.today().day + 1)).isoformat() \
-        if date.today().month == date.today().replace(day=date.today().day + 1).month \
-        else (date.today().replace(day=1)).isoformat()
-    # simpler: just use string prefix matching
-    today_str = date.today().isoformat()
-    import datetime as _dt
-    tomorrow_str = (_dt.date.today() + _dt.timedelta(days=1)).isoformat()
-
-    for slot in detailed:
-        period_start = slot.get(SOLCAST_ATTR_PERIOD_START, "")
-        pv_kwh = slot.get(SOLCAST_ATTR_ESTIMATE, 0.0)
-        if not period_start:
-            continue
-        # Normalise: strip timezone, truncate to HH:00
-        ts = _normalise_ts(period_start)
-        wh = float(pv_kwh) * 1000.0  # Solcast gives kWh per half-hour slot
-
-        if ts.startswith(today_str):
-            hourly_today[ts] = hourly_today.get(ts, 0.0) + wh
-        elif ts.startswith(tomorrow_str):
-            hourly_tomorrow[ts] = hourly_tomorrow.get(ts, 0.0) + wh
+    # Each sensor exposes its own detailedHourly attribute with hourly slots (kWh each).
+    hourly_today = _extract_solcast_hourly(
+        today_state.attributes.get(SOLCAST_ATTR_DETAILED_TODAY, [])
+    )
+    hourly_tomorrow = _extract_solcast_hourly(
+        tomorrow_state.attributes.get(SOLCAST_ATTR_DETAILED_TOMORROW, [])
+    )
 
     return SourceReading(
         source_id=SOURCE_SOLCAST,
@@ -297,6 +278,24 @@ def _parse_float(value: str, entity_id: str) -> float:
         return float(value)
     except (ValueError, TypeError) as err:
         raise SourceUnavailable(f"Cannot parse float from {entity_id}: {value!r}") from err
+
+
+def _extract_solcast_hourly(slots: list) -> HourlyWh:
+    """
+    Convert a Solcast detailedHourly list to a normalised HourlyWh dict.
+
+    Each slot is a dict with keys: period_start (ISO str), pv_estimate (kWh).
+    Values are converted to Wh and keyed by hour-aligned local ISO string.
+    """
+    result: HourlyWh = {}
+    for slot in slots:
+        period_start = slot.get(SOLCAST_ATTR_PERIOD_START, "")
+        pv_kwh = slot.get(SOLCAST_ATTR_ESTIMATE, 0.0)
+        if not period_start:
+            continue
+        ts = _normalise_ts(period_start)
+        result[ts] = result.get(ts, 0.0) + float(pv_kwh) * 1000.0  # kWh → Wh
+    return result
 
 
 def _extract_wh_hours(raw: dict) -> HourlyWh:

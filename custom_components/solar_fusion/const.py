@@ -61,10 +61,12 @@ OPEN_METEO_ATTR_HOURLY = "wh_hours"
 
 # Solcast PV Forecast (HACS, domain: solcast_solar)
 # Sensors: sensor.solcast_pv_forecast_forecast_today / _forecast_tomorrow
-# Hourly attribute: "detailedForecast" list of {period_start, pv_estimate (kWh)}
+# Hourly attribute: "detailedHourly" list of {period_start, pv_estimate (kWh)}
+# Both today- and tomorrow-sensors expose their own detailedHourly attribute.
 SOLCAST_TODAY = "sensor.solcast_pv_forecast_forecast_today"
 SOLCAST_TOMORROW = "sensor.solcast_pv_forecast_forecast_tomorrow"
-SOLCAST_ATTR_DETAILED = "detailedForecast"          # list[{period_start, pv_estimate}]
+SOLCAST_ATTR_DETAILED_TODAY    = "detailedHourly"   # on today-sensor:    list[{period_start, pv_estimate}]
+SOLCAST_ATTR_DETAILED_TOMORROW = "detailedHourly"   # on tomorrow-sensor: list[{period_start, pv_estimate}]
 SOLCAST_ATTR_ESTIMATE = "pv_estimate"               # kWh per slot
 SOLCAST_ATTR_PERIOD_START = "period_start"
 
