@@ -127,6 +127,53 @@ def _recent_records(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Solar profile helper
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _build_solar_profile(
+    readings: List[SourceReading], today: date
+) -> Dict[str, float]:
+    """
+    Build a normalised hourly shape (fractions summing to 1.0) for a day.
+
+    Priority:
+    1. Average of all available hourly_today profiles from readings.
+    2. Generic Gaussian bell-curve (peak at 13:00, sigma ~3h).
+    """
+    today_str = today.isoformat()
+    combined: Dict[str, float] = {}
+    contributing_sources = 0
+
+    for reading in readings:
+        hourly = reading.hourly_today or {}
+        day_slots = {k: v for k, v in hourly.items() if k.startswith(today_str)}
+        if not day_slots:
+            continue
+        total = sum(day_slots.values())
+        if total <= 0:
+            continue
+        contributing_sources += 1
+        for slot, wh in day_slots.items():
+            combined[slot] = combined.get(slot, 0.0) + wh / total
+
+    if combined and contributing_sources > 0:
+        # Average across contributing sources, then normalise
+        total = sum(combined.values())
+        if total > 0:
+            return {slot: v / total for slot, v in combined.items()}
+
+    # Fallback: generic Gaussian bell curve (peak ~13:00 local, sigma 3h)
+    peak_h = 13.0
+    sigma = 3.0
+    profile: Dict[str, float] = {}
+    for h in range(24):
+        slot = f"{today_str}T{h:02d}:00"
+        profile[slot] = math.exp(-0.5 * ((h - peak_h) / sigma) ** 2)
+    total = sum(profile.values())
+    return {slot: v / total for slot, v in profile.items()}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # FusionEngine
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -202,14 +249,22 @@ class FusionEngine:
             _LOGGER.debug(
                 "No hourly data for %s – using calibrated daily totals as fallback", date_str
             )
-            daily_slot = f"{date_str}T00:00"
+            # Build a solar-shape profile from today's data (or generic bell curve)
+            # and distribute the daily total across 24 hourly slots.
+            profile = _build_solar_profile(readings, date.today())
+
             for reading in readings:
                 raw_kwh = (
                     reading.today_kwh if target_date == date.today() else reading.tomorrow_kwh
                 )
                 calibrated_kwh = self._calibrate(reading.source_id, raw_kwh, current_month)
-                slots[daily_slot] = slots.get(daily_slot, {})
-                slots[daily_slot][reading.source_id] = max(0.0, calibrated_kwh * 1000.0)
+                target_wh = max(0.0, calibrated_kwh * 1000.0)
+                for slot, fraction in profile.items():
+                    # Rewrite the date part from today to target_date
+                    day_slot = slot.replace(date.today().isoformat(), date_str)
+                    slots.setdefault(day_slot, {})[reading.source_id] = round(
+                        target_wh * fraction, 1
+                    )
 
         fused: HourlyWh = {}
         for slot, source_vals in slots.items():

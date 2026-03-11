@@ -1,14 +1,14 @@
 {
   "domain": "solar_fusion",
   "name": "Solar Fusion",
-  "version": "1.0.0",
-  "documentation": "https://github.com/yourusername/solar-forecast-fusion",
-  "issue_tracker": "https://github.com/yourusername/solar-forecast-fusion/issues",
-  "dependencies": ["recorder"],
   "after_dependencies": ["forecast_solar"],
-  "codeowners": ["@yourusername"],
-  "requirements": [],
-  "iot_class": "local_push",
+  "codeowners": ["@mkshb"],
   "config_flow": true,
-  "integration_type": "service"
+  "dependencies": ["recorder"],
+  "documentation": "https://github.com/mkshb/hass-solar-fusion",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/mkshb/hass-solar-fusion/issues",
+  "requirements": [],
+  "version": "0.1.0"
 }
