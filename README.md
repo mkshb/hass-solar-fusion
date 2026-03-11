@@ -349,21 +349,9 @@ automation:
 
 ## Data flow
 
-```
-Forecast.Solar entities    ──┐  daily kWh + hourly Wh (wh_hours attr)
-Open-Meteo Solar entities  ──┼──► Solar Fusion ──► Forecast – Today / Tomorrow
-Solcast entities           ──┘  daily kWh + hourly Wh (detailedHourly attr)  │
-                                        │                                      ├──► Forecast – Hourly
-                                        │                                      ├──► Forecast – Uncertainty
-                                        │                                      ├──► Quality – <Source> (×N)
-                                        │                                      └──► Diagnostics – Morning Snapshot
+**Forecast sources** — Forecast.Solar, Open-Meteo Solar and Solcast each provide daily kWh totals and hourly Wh breakdowns, which Solar Fusion reads directly from their HA entities. These are calibrated, weighted and fused into four output sensors: **Forecast – Today**, **Forecast – Tomorrow**, **Forecast – Hourly** and **Forecast – Uncertainty**. The **Quality – \<Source\>** sensors and the **Diagnostics – Morning Snapshot** sensor are updated as part of the same process.
 
-Actual PV sensor(s) (opt.) ──────────────► Diagnostics – PV Daily Production
-                                                    │
-                                           Nightly accuracy recording
-                                           → isotonic regression update
-                                           → seasonal weight update
-```
+**Actual production** — If one or more PV production sensors are configured, Solar Fusion creates the **Diagnostics – PV Daily Production** meter, which accumulates the day's output and resets at midnight. After midnight, this value is compared against the morning snapshot to record accuracy history, which in turn drives the isotonic regression calibration and seasonal source weights.
 
 ---
 
