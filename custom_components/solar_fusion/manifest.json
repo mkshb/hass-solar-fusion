@@ -1,6 +1,6 @@
 {
-  "domain": "solar_forecast_fusion",
-  "name": "Solar Forecast Fusion",
+  "domain": "solar_fusion",
+  "name": "Solar Fusion",
   "version": "1.0.0",
   "documentation": "https://github.com/yourusername/solar-forecast-fusion",
   "issue_tracker": "https://github.com/yourusername/solar-forecast-fusion/issues",

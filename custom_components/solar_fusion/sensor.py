@@ -1,4 +1,4 @@
-"""Sensor platform for Solar Forecast Fusion."""
+"""Sensor platform for Solar Fusion."""
 from __future__ import annotations
 
 import logging
@@ -19,11 +19,19 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALL_SOURCES, CONF_PV_ENTITY, DOMAIN, SOURCE_NAMES
+from .const import ALL_SOURCES, CONF_INSTANCE_NAME, CONF_PV_ENTITY, CONF_PV_ENTITIES, DOMAIN, SOURCE_NAMES
 from .coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
+
+
+def _sensor_name(entry: ConfigEntry, suffix: str) -> str:
+    """Return a sensor name prefixed with the instance name if set."""
+    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
+    if instance:
+        return f"Solar Fusion {instance} – {suffix}"
+    return f"Solar Fusion – {suffix}"
 
 
 async def async_setup_entry(
@@ -44,22 +52,14 @@ async def async_setup_entry(
     for source_id in config_entry.data.get(CONF_SOURCES_KEY, []):
         entities.append(SourceQualitySensor(coordinator, config_entry, source_id))
 
-    # Add the built-in daily meter if a PV entity is configured
-    pv_entity = config_entry.data.get(CONF_PV_ENTITY, "")
-    if pv_entity:
-        entities.append(PVDailyMeterSensor(config_entry, pv_entity))
+    # Add the built-in daily meter if PV sensor(s) are configured
+    pv_entities: List[str] = config_entry.data.get(CONF_PV_ENTITIES) or []
+    if not pv_entities and config_entry.data.get(CONF_PV_ENTITY):
+        pv_entities = [config_entry.data[CONF_PV_ENTITY]]
+    if pv_entities:
+        entities.append(PVDailyMeterSensor(config_entry, pv_entities))
 
     async_add_entities(entities, update_before_add=True)
-
-
-def _device(entry: ConfigEntry) -> DeviceInfo:
-    return DeviceInfo(
-        identifiers={(DOMAIN, entry.entry_id)},
-        name="Solar Forecast Fusion",
-        manufacturer="Solar Forecast Fusion",
-        model="Adaptive Ensemble Forecaster",
-        sw_version="1.0.0",
-    )
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -68,7 +68,10 @@ def _device(entry: ConfigEntry) -> DeviceInfo:
 
 class PVDailyMeterSensor(RestoreEntity, SensorEntity):
     """
-    Tracks daily PV production from any source sensor.
+    Tracks daily PV production, supporting one or multiple source sensors.
+
+    When multiple source sensors are configured (e.g. Dach + Garage), their
+    values are summed to produce a single combined daily total.
 
     Works with both sensor types:
     - total_increasing (lifetime kWh counter): tracks delta since midnight
@@ -83,23 +86,24 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
     _attr_icon = "mdi:solar-power-variant"
     _attr_should_poll = False
 
-    def __init__(self, entry: ConfigEntry, source_entity_id: str) -> None:
+    def __init__(self, entry: ConfigEntry, source_entity_ids: List[str]) -> None:
         self._entry = entry
-        self._source_entity_id = source_entity_id
+        self._source_entity_ids = source_entity_ids
         self._attr_unique_id = f"{entry.entry_id}_pv_daily_meter"
-        self._attr_name = "Solar Forecast Fusion – PV Tagesproduktion"
+        self._attr_name = _sensor_name(entry, "PV Tagesproduktion")
         self._attr_device_info = _device(entry)
 
-        self._value: Optional[float] = None          # today's accumulated kWh
-        self._day_start_value: Optional[float] = None  # source value at midnight
-        self._source_state_class: Optional[str] = None
+        self._value: Optional[float] = None
+        # Per-source tracking: {entity_id: {"start": float, "state_class": str}}
+        self._source_state: Dict[str, Dict] = {
+            eid: {"start": None, "state_class": None} for eid in source_entity_ids
+        }
         self._today: date = date.today()
 
     async def async_added_to_hass(self) -> None:
-        """Restore state and subscribe to source + midnight."""
+        """Restore state and subscribe to source sensors + midnight."""
         await super().async_added_to_hass()
 
-        # Restore previous state
         last = await self.async_get_last_state()
         if last and last.state not in (None, "unknown", "unavailable"):
             try:
@@ -107,14 +111,17 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
                 self._today = date.fromisoformat(
                     last.attributes.get("date", date.today().isoformat())
                 )
-                self._day_start_value = last.attributes.get("day_start_value")
+                for eid in self._source_entity_ids:
+                    saved = last.attributes.get(f"day_start_{eid.replace('.', '_')}")
+                    if saved is not None:
+                        self._source_state[eid]["start"] = float(saved)
             except (ValueError, TypeError):
                 pass
 
-        # Track source sensor changes
+        # Track all source sensors
         self.async_on_remove(
             async_track_state_change_event(
-                self.hass, [self._source_entity_id], self._handle_source_change
+                self.hass, self._source_entity_ids, self._handle_source_change
             )
         )
 
@@ -125,27 +132,24 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             )
         )
 
-        # Seed day_start_value from current source state on first run
-        source_state = self.hass.states.get(self._source_entity_id)
-        if source_state and source_state.state not in ("unknown", "unavailable"):
-            try:
-                current_val = float(source_state.state)
-                self._source_state_class = source_state.attributes.get("state_class", "")
-                if self._day_start_value is None:
-                    self._day_start_value = current_val
-                    _LOGGER.debug(
-                        "PV meter seeded day_start_value=%.3f from %s",
-                        current_val,
-                        self._source_entity_id,
-                    )
-            except (ValueError, TypeError):
-                pass
+        # Seed day_start values from current source states
+        for eid in self._source_entity_ids:
+            state = self.hass.states.get(eid)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    val = float(state.state)
+                    self._source_state[eid]["state_class"] = state.attributes.get("state_class", "")
+                    if self._source_state[eid]["start"] is None:
+                        self._source_state[eid]["start"] = val
+                except (ValueError, TypeError):
+                    pass
 
     @callback
     def _handle_source_change(self, event) -> None:
-        """Update daily meter when source sensor changes."""
+        """Recalculate summed daily total when any source sensor changes."""
+        entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
-        if new_state is None or new_state.state in ("unknown", "unavailable"):
+        if not entity_id or new_state is None or new_state.state in ("unknown", "unavailable"):
             return
 
         try:
@@ -153,47 +157,59 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         except (ValueError, TypeError):
             return
 
-        self._source_state_class = new_state.attributes.get("state_class", "")
+        src = self._source_state[entity_id]
+        src["state_class"] = new_state.attributes.get("state_class", "")
 
-        # If day changed without midnight event firing (e.g. HA restart), reset now
+        # Day rollover without midnight event
         if date.today() != self._today:
-            self._reset(current_val)
+            self._reset()
             return
 
-        if self._day_start_value is None:
-            self._day_start_value = current_val
+        if src["start"] is None:
+            src["start"] = current_val
 
-        if self._source_state_class == "total_increasing":
-            # Cumulative lifetime sensor: delta from midnight
-            delta = current_val - self._day_start_value
-            if delta < 0:
-                # Counter reset (shouldn't happen for lifetime sensors but be safe)
-                self._day_start_value = current_val
-                delta = 0.0
-            self._value = round(delta, 3)
-        else:
-            # Daily-resetting sensor: value IS today's total
-            self._value = round(current_val, 3)
-
+        # Recalculate total across all sources
+        self._value = round(self._calculate_total(), 3)
         self.async_write_ha_state()
+
+    def _calculate_total(self) -> float:
+        """Sum today's production across all configured source sensors."""
+        total = 0.0
+        for eid in self._source_entity_ids:
+            state = self.hass.states.get(eid)
+            if state is None or state.state in ("unknown", "unavailable"):
+                continue
+            try:
+                val = float(state.state)
+            except (ValueError, TypeError):
+                continue
+            src = self._source_state[eid]
+            if src["state_class"] == "total_increasing":
+                start = src["start"] or val
+                delta = max(0.0, val - start)
+                total += delta
+            else:
+                total += val
+        return total
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
         """Reset meter at midnight."""
-        source_state = self.hass.states.get(self._source_entity_id)
-        start_val = None
-        if source_state and source_state.state not in ("unknown", "unavailable"):
-            try:
-                start_val = float(source_state.state)
-            except (ValueError, TypeError):
-                pass
-        self._reset(start_val)
+        self._reset()
 
-    def _reset(self, day_start_value: Optional[float]) -> None:
-        """Reset for a new day."""
-        _LOGGER.debug("PV daily meter reset (new day_start=%.3f)", day_start_value or 0)
+    def _reset(self) -> None:
+        """Reset all source tracking for a new day."""
+        _LOGGER.debug("PV daily meter reset for new day")
         self._today = date.today()
-        self._day_start_value = day_start_value
+        for eid in self._source_entity_ids:
+            state = self.hass.states.get(eid)
+            if state and state.state not in ("unknown", "unavailable"):
+                try:
+                    self._source_state[eid]["start"] = float(state.state)
+                except (ValueError, TypeError):
+                    self._source_state[eid]["start"] = None
+            else:
+                self._source_state[eid]["start"] = None
         self._value = 0.0
         self.async_write_ha_state()
 
@@ -203,22 +219,28 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        return {
-            "source_entity": self._source_entity_id,
+        attrs: Dict[str, Any] = {
             "date": self._today.isoformat(),
-            "day_start_value": self._day_start_value,
-            "source_state_class": self._source_state_class,
+            "source_count": len(self._source_entity_ids),
+            "source_entities": self._source_entity_ids,
         }
+        # Per-source day_start values for debugging / state restore
+        for eid in self._source_entity_ids:
+            key = f"day_start_{eid.replace('.', '_')}"
+            attrs[key] = self._source_state[eid]["start"]
+        return attrs
 
 
 # ──────────────────────────────────────────────────────────────────────────────
 
 
 def _device(entry: ConfigEntry) -> DeviceInfo:
+    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
+    device_name = f"Solar Fusion \u2013 {instance}" if instance else "Solar Fusion"
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name="Solar Forecast Fusion",
-        manufacturer="Solar Forecast Fusion",
+        name=device_name,
+        manufacturer="Solar Fusion",
         model="Adaptive Ensemble Forecaster",
         sw_version="1.0.0",
     )
@@ -238,7 +260,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{entry.entry_id}_fused_{day}"
-        self._attr_name = f"Solar Forecast Fusion – Fused {day.capitalize()}"
+        self._attr_name = _sensor_name(entry, f"Fused {day.capitalize()}")
         self._attr_device_info = _device(entry)
 
     @property
@@ -282,7 +304,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_fused_hourly"
-        self._attr_name = "Solar Forecast Fusion – Hourly Forecast"
+        self._attr_name = _sensor_name(entry, "Hourly Forecast")
         self._attr_device_info = _device(entry)
 
     @property
@@ -322,7 +344,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_uncertainty"
-        self._attr_name = "Solar Forecast Fusion – Forecast Uncertainty"
+        self._attr_name = _sensor_name(entry, "Forecast Uncertainty")
         self._attr_device_info = _device(entry)
 
     @property
@@ -359,7 +381,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
         self._source_id = source_id
         display = SOURCE_NAMES.get(source_id, source_id)
         self._attr_unique_id = f"{entry.entry_id}_quality_{source_id}"
-        self._attr_name = f"Solar Forecast Fusion – {display} RMSE"
+        self._attr_name = _sensor_name(entry, f"{display} RMSE")
         self._attr_device_info = _device(entry)
 
     @property
@@ -411,7 +433,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_morning_snapshot"
-        self._attr_name = "Solar Forecast Fusion – Morning Snapshot"
+        self._attr_name = _sensor_name(entry, "Morning Snapshot")
         self._attr_device_info = _device(entry)
 
     @property

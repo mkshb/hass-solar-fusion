@@ -2,7 +2,7 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
-A Home Assistant custom integration that **reads data from your already-installed Solar integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own.
+A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own.
 
 ---
 
@@ -25,7 +25,7 @@ Install **at least one** of the following integrations first:
 | Integration | Type | Link |
 |-------------|------|------|
 | **Forecast.Solar** | Built-in HA | Settings → Integrations → Add → "Forecast Solar" |
-| **Open-Meteo Solar** | HACS | [rany2/ha-open-meteo-solar-forecast](https://github.com/rany2/ha-open-meteo-solar-forecast) |
+| **Open-Meteo Solar Forecast** | HACS | [rany2/ha-open-meteo-solar-forecast](https://github.com/rany2/ha-open-meteo-solar-forecast) |
 | **Solcast PV Forecast** | HACS | [BJReplay/ha-solcast-solar](https://github.com/BJReplay/ha-solcast-solar) |
 
 Solar Fusion is most useful when **two or more** sources are installed, but works with a single source too (in that case it still applies bias correction).
@@ -65,28 +65,28 @@ The default entity IDs used by each integration are pre-filled. If you have rena
 
 | Sensor | Unit | Description |
 |--------|------|-------------|
-| `sensor.solar_forecast_fusion_fused_today` | kWh | Optimised forecast for today |
-| `sensor.solar_forecast_fusion_fused_tomorrow` | kWh | Optimised forecast for tomorrow |
-| `sensor.solar_forecast_fusion_hourly_forecast` | kWh | Combined hourly breakdown (in attributes) |
-| `sensor.solar_forecast_fusion_forecast_uncertainty` | % | Disagreement between sources |
-| `sensor.solar_forecast_fusion_<source>_rmse` | kWh | Per-source RMSE over last 14 days |
+| `sensor.solar_fusion_fused_today` | kWh | Optimised forecast for today |
+| `sensor.solar_fusion_fused_tomorrow` | kWh | Optimised forecast for tomorrow |
+| `sensor.solar_fusion_hourly_forecast` | kWh | Combined hourly breakdown (in attributes) |
+| `sensor.solar_fusion_forecast_uncertainty` | % | Disagreement between sources |
+| `sensor.solar_fusion_<source>_rmse` | kWh | Per-source RMSE over last 14 days |
 
 ### Key attributes (Fused Today / Tomorrow)
 
 ```yaml
 source_weights:
   Forecast.Solar: 0.52
-  Open-Meteo Solar: 0.31
+  Open-Meteo Solar Forecast: 0.31
   Solcast PV Forecast: 0.17
 source_values_kwh:
   Forecast.Solar: 18.4
-  Open-Meteo Solar: 15.1
+  Open-Meteo Solar Forecast: 15.1
   Solcast PV Forecast: 16.8
 hourly_forecast_wh:
   "2024-07-15T07:00": 320.0
   "2024-07-15T08:00": 1100.0
   ...
-active_sources: ["Forecast.Solar", "Open-Meteo Solar"]
+active_sources: ["Forecast.Solar", "Open-Meteo Solar Forecast"]
 missing_sources: []
 ```
 
@@ -125,7 +125,7 @@ automation:
     at: "22:00:00"
   condition:
     condition: numeric_state
-    entity_id: sensor.solar_forecast_fusion_fused_tomorrow
+    entity_id: sensor.solar_fusion_fused_tomorrow
     below: 10
   action:
     service: switch.turn_on
@@ -153,7 +153,7 @@ All processing is local. No data leaves Home Assistant.
 
 - Home Assistant 2023.6 or newer
 - The `recorder` integration (enabled by default)
-- At least one supported Solar integration installed and providing data
+- At least one supported solar forecast integration installed and providing data
 
 ---
 

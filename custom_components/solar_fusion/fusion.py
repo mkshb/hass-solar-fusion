@@ -1,5 +1,5 @@
 """
-Forecast Fusion Engine for Solar Forecast Fusion.
+Forecast Fusion Engine for Solar Fusion.
 
 Combines multiple SourceReadings using adaptive weighted averaging,
 bias correction and historical RMSE analysis.

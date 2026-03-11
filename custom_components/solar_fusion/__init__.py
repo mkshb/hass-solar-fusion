@@ -1,4 +1,4 @@
-"""Solar Forecast Fusion – Home Assistant Integration."""
+"""Solar Fusion – Home Assistant Integration."""
 from __future__ import annotations
 
 import logging
@@ -14,7 +14,7 @@ PLATFORMS = ["sensor"]
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Solar Forecast Fusion from a config entry."""
+    """Set up Solar Fusion from a config entry."""
     coordinator = SolarForecastCoordinator(hass, entry)
     await coordinator.async_setup()
     await coordinator.async_config_entry_first_refresh()

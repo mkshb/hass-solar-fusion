@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for Solar Forecast Fusion."""
+"""DataUpdateCoordinator for Solar Fusion."""
 from __future__ import annotations
 
 import logging
@@ -13,6 +13,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .const import (
     CONF_PV_ENTITY,
+    CONF_PV_ENTITIES,
     CONF_SOURCES,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
@@ -213,14 +214,18 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     ) -> None:
         """
         Record yesterday's actual production against the morning snapshot.
-        Falls back to current readings if no snapshot exists for yesterday.
+        Supports multiple PV sensors (summed) and falls back to current readings
+        if no snapshot exists for yesterday.
         """
-        pv_entity: Optional[str] = self._config.get(CONF_PV_ENTITY)
-        if not pv_entity:
+        # Build list of PV entity IDs to read – prefer new multi-entity key,
+        # fall back to legacy single-entity key for existing installations.
+        pv_entities: List[str] = self._config.get(CONF_PV_ENTITIES) or []
+        if not pv_entities and self._config.get(CONF_PV_ENTITY):
+            pv_entities = [self._config[CONF_PV_ENTITY]]
+        if not pv_entities:
             return
 
         daily_meter_entity = self._find_daily_meter_entity()
-        entity_to_read = daily_meter_entity or pv_entity
 
         yesterday = date.today() - timedelta(days=1)
         date_str = yesterday.isoformat()
@@ -228,9 +233,23 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         if any(r["date"] == date_str for r in self._history):
             return  # already recorded
 
-        actual_kwh = await self._async_read_actual_from_history(entity_to_read, yesterday)
-        if actual_kwh is None and daily_meter_entity:
-            actual_kwh = await self._async_read_actual_from_history(pv_entity, yesterday)
+        # Prefer the integrated daily meter (most accurate, single entity)
+        if daily_meter_entity:
+            actual_kwh = await self._async_read_actual_from_history(daily_meter_entity, yesterday)
+        else:
+            actual_kwh = None
+
+        # Fall back to summing individual PV sensors
+        if actual_kwh is None:
+            total = 0.0
+            any_found = False
+            for entity_id in pv_entities:
+                kwh = await self._async_read_actual_from_history(entity_id, yesterday)
+                if kwh is not None:
+                    total += kwh
+                    any_found = True
+            actual_kwh = total if any_found else None
+
         if actual_kwh is None:
             _LOGGER.debug("No actual production data found for %s", date_str)
             return
@@ -243,7 +262,6 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 date_str,
                 morning,
             )
-            # Build synthetic SourceReadings from snapshot values
             reference_readings = [
                 SourceReading(
                     source_id=sid,

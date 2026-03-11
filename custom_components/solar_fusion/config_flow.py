@@ -1,4 +1,4 @@
-"""Config flow for Solar Forecast Fusion."""
+"""Config flow for Solar Fusion."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,9 @@ from homeassistant.helpers import selector
 
 from .const import (
     ALL_SOURCES,
+    CONF_INSTANCE_NAME,
     CONF_PV_ENTITY,
+    CONF_PV_ENTITIES,
     CONF_SOURCES,
     CONF_UPDATE_INTERVAL,
     DEFAULT_UPDATE_INTERVAL,
@@ -47,7 +49,7 @@ _DEFAULT_ENTITIES = {
 }
 
 
-class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
     Three-step config flow:
       Step 1 (user)    – auto-detect & select which installed sources to use
@@ -78,6 +80,7 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     description_placeholders=self._source_hints(),
                 )
             self._data[CONF_SOURCES] = self._selected
+            self._data[CONF_INSTANCE_NAME] = user_input.get(CONF_INSTANCE_NAME, "").strip()
             return await self.async_step_entities()
 
         return self.async_show_form(
@@ -123,11 +126,16 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_settings(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Step 3: PV production sensor and update interval."""
+        """Step 3: PV production sensor(s) and update interval."""
         if user_input is not None:
-            self._data.update(user_input)
+            pv_entities: List[str] = [
+                e for e in user_input.get(CONF_PV_ENTITIES, []) if e
+            ]
+            self._data[CONF_PV_ENTITIES] = pv_entities
+            self._data[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
+            self._data[CONF_UPDATE_INTERVAL] = user_input[CONF_UPDATE_INTERVAL]
             return self.async_create_entry(
-                title="Solar Forecast Fusion",
+                title=_entry_title(self._data.get(CONF_INSTANCE_NAME, "")),
                 data=self._data,
             )
 
@@ -135,8 +143,8 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             step_id="settings",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(CONF_PV_ENTITY, default=""): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
+                    vol.Optional(CONF_PV_ENTITIES, default=[]): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
                     vol.Optional(
                         CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL
@@ -147,10 +155,9 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             description_placeholders={
                 "pv_hint": (
-                    "Wähle deinen PV-Produktionssensor. Aufsummierende Sensoren "
-                    "(Gesamtproduktion) und täglich zurücksetzende Sensoren werden "
-                    "beide unterstützt. Ein integrierter Tageszähler wird automatisch "
-                    "innerhalb der Integration erstellt."
+                    "Wähle einen oder mehrere PV-Produktionssensoren. "
+                    "Bei mehreren Sensoren (z. B. Dach + Garage) werden die Werte "
+                    "automatisch summiert – ein gemeinsamer Tageszähler wird erstellt."
                 )
             },
         )
@@ -162,16 +169,19 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return SolarForecastFusionOptionsFlow(config_entry)
+        return SolarFusionOptionsFlow(config_entry)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────────
 
     def _sources_schema(self) -> vol.Schema:
-        """Schema that pre-selects detected sources."""
+        """Schema that pre-selects detected sources and asks for an instance name."""
         return vol.Schema(
             {
+                vol.Optional(CONF_INSTANCE_NAME, default=""): selector.TextSelector(
+                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+                ),
                 vol.Required(
                     CONF_SOURCES,
                     default=self._detected,
@@ -198,7 +208,14 @@ class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return {"detected": "No forecast integrations detected. Install one first."}
 
 
-class SolarForecastFusionOptionsFlow(config_entries.OptionsFlow):
+def _entry_title(instance_name: str) -> str:
+    """Return the config entry title, optionally suffixed with the instance name."""
+    if instance_name:
+        return f"Solar Fusion – {instance_name}"
+    return "Solar Fusion"
+
+
+class SolarFusionOptionsFlow(config_entries.OptionsFlow):
     """Allow reconfiguration of settings without removing the entry."""
 
     def __init__(self, config_entry) -> None:
@@ -208,18 +225,32 @@ class SolarForecastFusionOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         current = dict(self._entry.data)
+        current_pv: List[str] = current.get(CONF_PV_ENTITIES) or (
+            [current[CONF_PV_ENTITY]] if current.get(CONF_PV_ENTITY) else []
+        )
+        current_name: str = current.get(CONF_INSTANCE_NAME, "")
+
         if user_input is not None:
+            pv_entities = [e for e in user_input.get(CONF_PV_ENTITIES, []) if e]
+            user_input[CONF_PV_ENTITIES] = pv_entities
+            user_input[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
+            # Update entry title when name changes
+            new_name = user_input.get(CONF_INSTANCE_NAME, "").strip()
+            user_input[CONF_INSTANCE_NAME] = new_name
+            self.hass.config_entries.async_update_entry(
+                self._entry, title=_entry_title(new_name)
+            )
             return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
-                    vol.Optional(
-                        CONF_PV_ENTITY,
-                        default=current.get(CONF_PV_ENTITY, ""),
-                    ): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
+                    vol.Optional(CONF_INSTANCE_NAME, default=current_name): selector.TextSelector(
+                        selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
+                    ),
+                    vol.Optional(CONF_PV_ENTITIES, default=current_pv): selector.EntitySelector(
+                        selector.EntitySelectorConfig(domain="sensor", multiple=True)
                     ),
                     vol.Optional(
                         CONF_UPDATE_INTERVAL,
@@ -229,4 +260,7 @@ class SolarForecastFusionOptionsFlow(config_entries.OptionsFlow):
                     ),
                 }
             ),
+            description_placeholders={
+                "pv_hint": "Mehrere Sensoren werden automatisch summiert (z. B. Dach + Garage)."
+            },
         )

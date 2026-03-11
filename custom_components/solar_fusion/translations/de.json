@@ -2,14 +2,15 @@
   "config": {
     "step": {
       "user": {
-        "title": "Solar Forecast Fusion – Quellen auswählen",
-        "description": "Solar Forecast Fusion liest Daten ausschließlich aus anderen installierten Prognose-Integrationen – es werden keine eigenen API-Abfragen durchgeführt.\n\nErkannte Integrationen sind vorausgewählt. Mit '(nicht gefunden)' markierte Quellen müssen zuerst installiert und konfiguriert werden.\n\n{detected}",
+        "title": "Solar Fusion – Quellen auswählen",
+        "description": "Solar Fusion liest Daten ausschließlich aus anderen installierten Prognose-Integrationen – es werden keine eigenen API-Abfragen durchgeführt.\n\nErkannte Integrationen sind vorausgewählt. Mit '(nicht gefunden)' markierte Quellen müssen zuerst installiert und konfiguriert werden.\n\n{detected}",
         "data": {
+          "instance_name": "Name dieser Instanz (z. B. 'Dach' oder 'Garage')",
           "sources": "Zu kombinierende Prognose-Integrationen"
         }
       },
       "entities": {
-        "title": "Solar Forecast Fusion – Entitäten bestätigen",
+        "title": "Solar Fusion – Entitäten bestätigen",
         "description": "Überprüfe, ob die Entitäts-IDs mit denen der jeweiligen Prognose-Integration übereinstimmen. {hint}",
         "data": {
           "forecast_solar_today": "Forecast.Solar – Energieproduktion Heute",
@@ -21,27 +22,33 @@
         }
       },
       "settings": {
-        "title": "Solar Forecast Fusion – Einstellungen",
+        "title": "Solar Fusion – Einstellungen",
         "description": "{pv_hint}",
         "data": {
-          "pv_entity": "Tatsächlicher PV-Produktionssensor (optional)",
+          "pv_entities": "PV-Produktionssensoren (optional, mehrere möglich)",
           "update_interval": "Aktualisierungsintervall (Minuten)"
         }
+      },
+      "pv_confirm": {
+        "title": "Solar Fusion – Mehrere PV-Sensoren",
+        "description": "Die gewählten {count} Sensoren werden automatisch summiert:\n\n{sensors}"
       }
     },
     "error": {
       "no_sources": "Bitte mindestens eine Quelle auswählen."
     },
     "abort": {
-      "already_configured": "Solar Forecast Fusion ist bereits eingerichtet."
+      "already_configured": "Solar Fusion ist bereits eingerichtet."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Solar Forecast Fusion – Einstellungen",
+        "title": "Solar Fusion – Einstellungen",
+        "description": "{pv_hint}",
         "data": {
-          "pv_entity": "Tatsächlicher PV-Produktionssensor",
+          "instance_name": "Name dieser Instanz",
+          "pv_entities": "PV-Produktionssensoren (mehrere möglich)",
           "update_interval": "Aktualisierungsintervall (Minuten)"
         }
       }

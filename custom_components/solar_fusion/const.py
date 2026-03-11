@@ -1,13 +1,15 @@
-"""Constants for Solar Forecast Fusion."""
+"""Constants for Solar Fusion."""
 
-DOMAIN = "solar_forecast_fusion"
+DOMAIN = "solar_fusion"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Config entry keys (user-configured)
 # ──────────────────────────────────────────────────────────────────────────────
 CONF_SOURCES = "sources"            # list[str] – selected source IDs
-CONF_PV_ENTITY = "pv_entity"        # entity_id of actual PV production sensor
+CONF_PV_ENTITY = "pv_entity"        # entity_id of actual PV production sensor (single, legacy)
+CONF_PV_ENTITIES = "pv_entities"    # list[str] – multiple PV sensors to sum
 CONF_UPDATE_INTERVAL = "update_interval"  # minutes
+CONF_INSTANCE_NAME = "instance_name"      # user-defined name for this entry (e.g. "Dach")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Source identifiers  (one per supported upstream HA integration)

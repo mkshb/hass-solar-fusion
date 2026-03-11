@@ -1,5 +1,5 @@
 """
-Source Reader for Solar Forecast Fusion.
+Source Reader for Solar Fusion.
 
 Reads forecast data *exclusively* from entities that are already present in
 Home Assistant – i.e. from other installed forecast integrations.
