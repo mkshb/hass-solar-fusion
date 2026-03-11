@@ -1,4 +1,4 @@
-"""Sensor platform for Solar Fusion."""
+"""Sensor platform for Solar Forecast Fusion."""
 from __future__ import annotations
 
 import logging
@@ -19,19 +19,11 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import ALL_SOURCES, CONF_INSTANCE_NAME, CONF_PV_ENTITY, CONF_PV_ENTITIES, DOMAIN, SOURCE_NAMES
+from .const import ALL_SOURCES, CONF_PV_ENTITY, CONF_PV_ENTITIES, DOMAIN, SOURCE_NAMES
 from .coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
-
-
-def _sensor_name(entry: ConfigEntry, suffix: str) -> str:
-    """Return a sensor name prefixed with the instance name if set."""
-    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
-    if instance:
-        return f"Solar Fusion {instance} – {suffix}"
-    return f"Solar Fusion – {suffix}"
 
 
 async def async_setup_entry(
@@ -62,6 +54,16 @@ async def async_setup_entry(
     async_add_entities(entities, update_before_add=True)
 
 
+def _device(entry: ConfigEntry) -> DeviceInfo:
+    return DeviceInfo(
+        identifiers={(DOMAIN, entry.entry_id)},
+        name="Solar Forecast Fusion",
+        manufacturer="Solar Forecast Fusion",
+        model="Adaptive Ensemble Forecaster",
+        sw_version="1.0.0",
+    )
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Built-in daily PV meter  (replaces external utility_meter helper)
 # ──────────────────────────────────────────────────────────────────────────────
@@ -90,7 +92,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._entry = entry
         self._source_entity_ids = source_entity_ids
         self._attr_unique_id = f"{entry.entry_id}_pv_daily_meter"
-        self._attr_name = _sensor_name(entry, "PV Tagesproduktion")
+        self._attr_name = "Solar Forecast Fusion – PV Tagesproduktion"
         self._attr_device_info = _device(entry)
 
         self._value: Optional[float] = None
@@ -235,12 +237,10 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
 
 def _device(entry: ConfigEntry) -> DeviceInfo:
-    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
-    device_name = f"Solar Fusion \u2013 {instance}" if instance else "Solar Fusion"
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name=device_name,
-        manufacturer="Solar Fusion",
+        name="Solar Forecast Fusion",
+        manufacturer="Solar Forecast Fusion",
         model="Adaptive Ensemble Forecaster",
         sw_version="1.0.0",
     )
@@ -260,7 +260,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{entry.entry_id}_fused_{day}"
-        self._attr_name = _sensor_name(entry, f"Fused {day.capitalize()}")
+        self._attr_name = f"Solar Forecast Fusion – Fused {day.capitalize()}"
         self._attr_device_info = _device(entry)
 
     @property
@@ -304,7 +304,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_fused_hourly"
-        self._attr_name = _sensor_name(entry, "Hourly Forecast")
+        self._attr_name = "Solar Forecast Fusion – Hourly Forecast"
         self._attr_device_info = _device(entry)
 
     @property
@@ -344,7 +344,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_uncertainty"
-        self._attr_name = _sensor_name(entry, "Forecast Uncertainty")
+        self._attr_name = "Solar Forecast Fusion – Forecast Uncertainty"
         self._attr_device_info = _device(entry)
 
     @property
@@ -381,7 +381,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
         self._source_id = source_id
         display = SOURCE_NAMES.get(source_id, source_id)
         self._attr_unique_id = f"{entry.entry_id}_quality_{source_id}"
-        self._attr_name = _sensor_name(entry, f"{display} RMSE")
+        self._attr_name = f"Solar Forecast Fusion – {display} RMSE"
         self._attr_device_info = _device(entry)
 
     @property
@@ -399,7 +399,6 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "mae_kwh": q.get("mae"),
             "bias_kwh": q.get("bias"),
             "days_evaluated": q.get("days_evaluated", 0),
-            "calibration_mode": q.get("calibration_mode", "none"),
             "weight": round(data.get("weights", {}).get(self._source_id, 0), 3),
             "today_kwh": raw.get("today_kwh"),
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
@@ -434,7 +433,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_morning_snapshot"
-        self._attr_name = _sensor_name(entry, "Morning Snapshot")
+        self._attr_name = "Solar Forecast Fusion – Morning Snapshot"
         self._attr_device_info = _device(entry)
 
     @property

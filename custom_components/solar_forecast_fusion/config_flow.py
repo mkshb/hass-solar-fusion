@@ -1,4 +1,4 @@
-"""Config flow for Solar Fusion."""
+"""Config flow for Solar Forecast Fusion."""
 from __future__ import annotations
 
 import logging
@@ -12,7 +12,6 @@ from homeassistant.helpers import selector
 
 from .const import (
     ALL_SOURCES,
-    CONF_INSTANCE_NAME,
     CONF_PV_ENTITY,
     CONF_PV_ENTITIES,
     CONF_SOURCES,
@@ -49,7 +48,7 @@ _DEFAULT_ENTITIES = {
 }
 
 
-class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+class SolarForecastFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
     Three-step config flow:
       Step 1 (user)    – auto-detect & select which installed sources to use
@@ -80,7 +79,6 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     description_placeholders=self._source_hints(),
                 )
             self._data[CONF_SOURCES] = self._selected
-            self._data[CONF_INSTANCE_NAME] = user_input.get(CONF_INSTANCE_NAME, "").strip()
             return await self.async_step_entities()
 
         return self.async_show_form(
@@ -134,10 +132,7 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._data[CONF_PV_ENTITIES] = pv_entities
             self._data[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
             self._data[CONF_UPDATE_INTERVAL] = user_input[CONF_UPDATE_INTERVAL]
-            return self.async_create_entry(
-                title=_entry_title(self._data.get(CONF_INSTANCE_NAME, "")),
-                data=self._data,
-            )
+            return self.async_create_entry(title="Solar Forecast Fusion", data=self._data)
 
         return self.async_show_form(
             step_id="settings",
@@ -169,19 +164,16 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     @staticmethod
     @callback
     def async_get_options_flow(config_entry):
-        return SolarFusionOptionsFlow(config_entry)
+        return SolarForecastFusionOptionsFlow(config_entry)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Helpers
     # ──────────────────────────────────────────────────────────────────────────
 
     def _sources_schema(self) -> vol.Schema:
-        """Schema that pre-selects detected sources and asks for an instance name."""
+        """Schema that pre-selects detected sources."""
         return vol.Schema(
             {
-                vol.Optional(CONF_INSTANCE_NAME, default=""): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-                ),
                 vol.Required(
                     CONF_SOURCES,
                     default=self._detected,
@@ -208,121 +200,29 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return {"detected": "No forecast integrations detected. Install one first."}
 
 
-def _entry_title(instance_name: str) -> str:
-    """Return the config entry title, optionally suffixed with the instance name."""
-    if instance_name:
-        return f"Solar Fusion – {instance_name}"
-    return "Solar Fusion"
-
-
-class SolarFusionOptionsFlow(config_entries.OptionsFlow):
-    """Allow reconfiguration of all settings without removing the entry."""
+class SolarForecastFusionOptionsFlow(config_entries.OptionsFlow):
+    """Allow reconfiguration of settings without removing the entry."""
 
     def __init__(self, config_entry) -> None:
         self._entry = config_entry
-        self._current = dict(config_entry.data)
-        self._selected: List[str] = []
-        self._data: Dict[str, Any] = {}
 
     async def async_step_init(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
-        """Step 1: instance name + source selection."""
-        detected = await self.hass.async_add_executor_job(
-            detect_available_sources, self.hass
-        )
-        current_sources: List[str] = self._current.get(CONF_SOURCES, [])
-        current_name: str = self._current.get(CONF_INSTANCE_NAME, "")
-
-        if user_input is not None:
-            self._selected = user_input.get(CONF_SOURCES, [])
-            if not self._selected:
-                return self.async_show_form(
-                    step_id="init",
-                    data_schema=self._sources_schema(detected, current_sources, current_name),
-                    errors={"base": "no_sources"},
-                )
-            self._data[CONF_SOURCES] = self._selected
-            self._data[CONF_INSTANCE_NAME] = user_input.get(CONF_INSTANCE_NAME, "").strip()
-            return await self.async_step_entities()
-
-        return self.async_show_form(
-            step_id="init",
-            data_schema=self._sources_schema(detected, current_sources, current_name),
-            description_placeholders={
-                "detected": (
-                    "Erkannte Integrationen: " + ", ".join(SOURCE_NAMES[s] for s in detected)
-                    if detected else "Keine Integrationen erkannt."
-                )
-            },
-        )
-
-    async def async_step_entities(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Step 2: confirm / override entity IDs per source."""
-        current_map: Dict = self._current.get("entity_map", {})
-
-        if user_input is not None:
-            entity_map: Dict[str, Dict] = {}
-            for source_id in self._selected:
-                entity_map[source_id] = {
-                    "today": user_input.get(f"{source_id}_today", _DEFAULT_ENTITIES[source_id]["today"]),
-                    "tomorrow": user_input.get(f"{source_id}_tomorrow", _DEFAULT_ENTITIES[source_id]["tomorrow"]),
-                }
-            self._data["entity_map"] = entity_map
-            return await self.async_step_settings()
-
-        schema_fields: Dict = {}
-        for source_id in self._selected:
-            saved = current_map.get(source_id, {})
-            defaults = _DEFAULT_ENTITIES.get(source_id, {})
-            schema_fields[
-                vol.Optional(
-                    f"{source_id}_today",
-                    default=saved.get("today", defaults.get("today", "")),
-                )
-            ] = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
-            schema_fields[
-                vol.Optional(
-                    f"{source_id}_tomorrow",
-                    default=saved.get("tomorrow", defaults.get("tomorrow", "")),
-                )
-            ] = selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
-
-        return self.async_show_form(
-            step_id="entities",
-            data_schema=vol.Schema(schema_fields),
-            description_placeholders={
-                "hint": "Aktuelle Entity-IDs sind vorausgefüllt. Nur ändern wenn nötig."
-            },
-        )
-
-    async def async_step_settings(
-        self, user_input: Optional[Dict[str, Any]] = None
-    ) -> FlowResult:
-        """Step 3: PV sensors + update interval."""
-        current_pv: List[str] = self._current.get(CONF_PV_ENTITIES) or (
-            [self._current[CONF_PV_ENTITY]] if self._current.get(CONF_PV_ENTITY) else []
+        current = dict(self._entry.data)
+        # Migrate legacy single-entity key to list
+        current_pv: List[str] = current.get(CONF_PV_ENTITIES) or (
+            [current[CONF_PV_ENTITY]] if current.get(CONF_PV_ENTITY) else []
         )
 
         if user_input is not None:
             pv_entities = [e for e in user_input.get(CONF_PV_ENTITIES, []) if e]
-            self._data[CONF_PV_ENTITIES] = pv_entities
-            self._data[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
-            self._data[CONF_UPDATE_INTERVAL] = user_input[CONF_UPDATE_INTERVAL]
-
-            # Persist everything back to config entry data
-            new_name = self._data.get(CONF_INSTANCE_NAME, "")
-            self.hass.config_entries.async_update_entry(
-                self._entry,
-                title=_entry_title(new_name),
-                data={**self._current, **self._data},
-            )
-            return self.async_create_entry(title="", data={})
+            user_input[CONF_PV_ENTITIES] = pv_entities
+            user_input[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
+            return self.async_create_entry(title="", data=user_input)
 
         return self.async_show_form(
-            step_id="settings",
+            step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Optional(CONF_PV_ENTITIES, default=current_pv): selector.EntitySelector(
@@ -330,41 +230,16 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
                     ),
                     vol.Optional(
                         CONF_UPDATE_INTERVAL,
-                        default=self._current.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
+                        default=current.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=15, max=360, step=15, mode="slider")
                     ),
                 }
             ),
             description_placeholders={
-                "pv_hint": "Mehrere Sensoren werden automatisch summiert (z. B. Dach + Garage)."
+                "pv_hint": (
+                    "Mehrere Sensoren werden automatisch summiert "
+                    "(z. B. Dach + Garage)."
+                )
             },
-        )
-
-    def _sources_schema(
-        self,
-        detected: List[str],
-        current_sources: List[str],
-        current_name: str,
-    ) -> vol.Schema:
-        return vol.Schema(
-            {
-                vol.Optional(CONF_INSTANCE_NAME, default=current_name): selector.TextSelector(
-                    selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)
-                ),
-                vol.Required(CONF_SOURCES, default=current_sources): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(
-                                value=s,
-                                label=SOURCE_NAMES[s]
-                                + (" (aktiv)" if s in current_sources else "")
-                                + (" [erkannt]" if s in detected else ""),
-                            )
-                            for s in ALL_SOURCES
-                        ],
-                        multiple=True,
-                    )
-                ),
-            }
         )

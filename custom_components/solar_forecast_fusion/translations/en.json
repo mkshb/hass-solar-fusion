@@ -2,15 +2,14 @@
   "config": {
     "step": {
       "user": {
-        "title": "Solar Fusion – Select Sources",
-        "description": "Solar Fusion reads data from other installed forecast integrations — it does not call any APIs itself.\n\nDetected integrations are pre-selected. Sources marked '(not found)' require their integration to be installed and configured first.\n\n{detected}",
+        "title": "Solar Forecast Fusion – Select Sources",
+        "description": "Solar Forecast Fusion reads data from other installed forecast integrations — it does not call any APIs itself.\n\nDetected integrations are pre-selected. Sources marked '(not found)' require their integration to be installed and configured first.\n\n{detected}",
         "data": {
-          "instance_name": "Name for this instance (e.g. 'Roof' or 'Garage')",
           "sources": "Forecast integrations to combine"
         }
       },
       "entities": {
-        "title": "Solar Fusion – Confirm Entity IDs",
+        "title": "Solar Forecast Fusion – Confirm Entity IDs",
         "description": "Verify the entity IDs match those created by each forecast integration. {hint}",
         "data": {
           "forecast_solar_today": "Forecast.Solar – Energy Production Today",
@@ -22,7 +21,7 @@
         }
       },
       "settings": {
-        "title": "Solar Fusion – Settings",
+        "title": "Solar Forecast Fusion – Settings",
         "description": "{pv_hint}",
         "data": {
           "pv_entities": "PV production sensors (optional, multiple supported)",
@@ -30,7 +29,7 @@
         }
       },
       "pv_confirm": {
-        "title": "Solar Fusion – Confirm Multiple PV Sensors",
+        "title": "Solar Forecast Fusion – Confirm Multiple PV Sensors",
         "description": "{count} PV sensors selected. Their values will be summed automatically into a single daily meter:\n\n{sensors}\n\nClick Submit to confirm."
       }
     },
@@ -38,33 +37,13 @@
       "no_sources": "Please select at least one source."
     },
     "abort": {
-      "already_configured": "Solar Fusion is already configured."
+      "already_configured": "Solar Forecast Fusion is already configured."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Solar Fusion – Sources",
-        "description": "{detected}",
-        "data": {
-          "instance_name": "Instance name",
-          "sources": "Forecast integrations to combine"
-        }
-      },
-      "entities": {
-        "title": "Solar Fusion – Entity IDs",
-        "description": "{hint}",
-        "data": {
-          "forecast_solar_today": "Forecast.Solar – Today",
-          "forecast_solar_tomorrow": "Forecast.Solar – Tomorrow",
-          "open_meteo_solar_forecast_today": "Open-Meteo – Today",
-          "open_meteo_solar_forecast_tomorrow": "Open-Meteo – Tomorrow",
-          "solcast_today": "Solcast – Today",
-          "solcast_tomorrow": "Solcast – Tomorrow"
-        }
-      },
-      "settings": {
-        "title": "Solar Fusion – Settings",
+        "title": "Solar Forecast Fusion – Options",
         "description": "{pv_hint}",
         "data": {
           "pv_entities": "PV production sensors (multiple supported)",

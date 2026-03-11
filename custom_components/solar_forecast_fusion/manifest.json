@@ -1,0 +1,14 @@
+{
+  "domain": "solar_forecast_fusion",
+  "name": "Solar Forecast Fusion",
+  "version": "1.0.0",
+  "documentation": "https://github.com/yourusername/solar-forecast-fusion",
+  "issue_tracker": "https://github.com/yourusername/solar-forecast-fusion/issues",
+  "dependencies": ["recorder"],
+  "after_dependencies": ["forecast_solar"],
+  "codeowners": ["@yourusername"],
+  "requirements": [],
+  "iot_class": "local_push",
+  "config_flow": true,
+  "integration_type": "service"
+}
