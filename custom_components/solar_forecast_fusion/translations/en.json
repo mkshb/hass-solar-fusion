@@ -1,0 +1,50 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Solar Forecast Fusion – Select Sources",
+        "description": "Solar Forecast Fusion reads data from other installed forecast integrations — it does not call any APIs itself.\n\nDetected integrations are pre-selected. Sources marked '(not found)' require their integration to be installed and configured first.\n\n{detected}",
+        "data": {
+          "sources": "Forecast integrations to combine"
+        }
+      },
+      "entities": {
+        "title": "Solar Forecast Fusion – Confirm Entity IDs",
+        "description": "Verify the entity IDs match those created by each forecast integration. {hint}",
+        "data": {
+          "forecast_solar_today": "Forecast.Solar – Energy Production Today",
+          "forecast_solar_tomorrow": "Forecast.Solar – Energy Production Tomorrow",
+          "open_meteo_solar_forecast_today": "Open-Meteo – Energy Production Today",
+          "open_meteo_solar_forecast_tomorrow": "Open-Meteo – Energy Production Tomorrow",
+          "solcast_today": "Solcast – Forecast Today",
+          "solcast_tomorrow": "Solcast – Forecast Tomorrow"
+        }
+      },
+      "settings": {
+        "title": "Solar Forecast Fusion – Settings",
+        "description": "{pv_hint}",
+        "data": {
+          "pv_entity": "Actual PV production sensor (optional)",
+          "update_interval": "Update interval (minutes)"
+        }
+      }
+    },
+    "error": {
+      "no_sources": "Please select at least one source."
+    },
+    "abort": {
+      "already_configured": "Solar Forecast Fusion is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Solar Forecast Fusion – Options",
+        "data": {
+          "pv_entity": "Actual PV production sensor",
+          "update_interval": "Update interval (minutes)"
+        }
+      }
+    }
+  }
+}
