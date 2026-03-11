@@ -26,8 +26,13 @@ _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
 
 
-def _sensor_name(entry: ConfigEntry, suffix: str) -> str:
-    """Return a sensor name prefixed with the instance name if set."""
+
+def _entity_name(entry: ConfigEntry, suffix: str) -> str:
+    """Return a fixed English entity name prefixed with the instance name.
+
+    Entity names are intentionally never translated so that entity_ids remain
+    stable and consistent regardless of the HA UI language.
+    """
     instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
     if instance:
         return f"Solar Fusion {instance} – {suffix}"
@@ -90,7 +95,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._entry = entry
         self._source_entity_ids = source_entity_ids
         self._attr_unique_id = f"{entry.entry_id}_pv_daily_meter"
-        self._attr_name = _sensor_name(entry, "PV Tagesproduktion")
+        self._attr_name = _entity_name(entry, "Diagnostics – PV Daily Production")
         self._attr_device_info = _device(entry)
 
         self._value: Optional[float] = None
@@ -260,7 +265,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         super().__init__(coordinator)
         self._day = day
         self._attr_unique_id = f"{entry.entry_id}_fused_{day}"
-        self._attr_name = _sensor_name(entry, f"Fused {day.capitalize()}")
+        self._attr_name = _entity_name(entry, f"Forecast – {day.capitalize()}")
         self._attr_device_info = _device(entry)
 
     @property
@@ -304,7 +309,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_fused_hourly"
-        self._attr_name = _sensor_name(entry, "Hourly Forecast")
+        self._attr_name = _entity_name(entry, "Forecast – Hourly")
         self._attr_device_info = _device(entry)
 
     @property
@@ -344,7 +349,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_uncertainty"
-        self._attr_name = _sensor_name(entry, "Forecast Uncertainty")
+        self._attr_name = _entity_name(entry, "Forecast – Uncertainty")
         self._attr_device_info = _device(entry)
 
     @property
@@ -359,7 +364,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
             return {}
         pct = data.get("uncertainty_pct", 0)
         return {
-            "interpretation": _uncertainty_label(pct),
+            "interpretation": _uncertainty_label(pct, self.hass.config.language),
             "source_weights": {
                 SOURCE_NAMES.get(k, k): round(v, 3)
                 for k, v in data.get("weights", {}).items()
@@ -381,7 +386,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
         self._source_id = source_id
         display = SOURCE_NAMES.get(source_id, source_id)
         self._attr_unique_id = f"{entry.entry_id}_quality_{source_id}"
-        self._attr_name = _sensor_name(entry, f"{display} RMSE")
+        self._attr_name = _entity_name(entry, f"Quality – {display}")
         self._attr_device_info = _device(entry)
 
     @property
@@ -405,7 +410,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
         }
         if q.get("rmse") is not None:
-            attrs["quality_label"] = _quality_label(q["rmse"])
+            attrs["quality_label"] = _quality_label(q["rmse"], self.hass.config.language)
         return attrs
 
     def _quality(self) -> Dict:
@@ -434,7 +439,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_morning_snapshot"
-        self._attr_name = _sensor_name(entry, "Morning Snapshot")
+        self._attr_name = _entity_name(entry, "Diagnostics – Morning Snapshot")
         self._attr_device_info = _device(entry)
 
     @property
@@ -443,7 +448,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
         snapshots = self.coordinator._morning_snapshots
         if today_str in snapshots:
             return f"{today_str}T06:00"
-        return "pending"
+        return "pending"  # translation key: selector.snapshot_state.pending
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -474,21 +479,61 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 # Label helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _uncertainty_label(pct: float) -> str:
+import json as _json
+import os as _os
+
+_TRANSLATIONS_DIR = _os.path.join(_os.path.dirname(__file__), "translations")
+_TRANSLATIONS_CACHE: dict = {}
+
+
+def _load_translations(language: str) -> dict:
+    """Load and cache translations for the given language, falling back to 'en'."""
+    if language not in _TRANSLATIONS_CACHE:
+        for lang in (language, "en"):
+            path = _os.path.join(_TRANSLATIONS_DIR, f"{lang}.json")
+            try:
+                with open(path, encoding="utf-8") as f:
+                    _TRANSLATIONS_CACHE[language] = _json.load(f)
+                    break
+            except (FileNotFoundError, _json.JSONDecodeError):
+                continue
+        else:
+            _TRANSLATIONS_CACHE[language] = {}
+    return _TRANSLATIONS_CACHE[language]
+
+
+def _translate_selector(language: str, section: str, key: str) -> str:
+    """Return translated selector label, falling back to English, then the key itself."""
+    for lang in (language, "en"):
+        t = _load_translations(lang)
+        try:
+            return t["selector"][section][key]
+        except KeyError:
+            continue
+    return key
+
+
+def _uncertainty_label(pct: float, language: str = "en") -> str:
+    """Return a translated label for the uncertainty level."""
     if pct < 10:
-        return "Low – sources agree well"
-    if pct < 25:
-        return "Moderate – some disagreement"
-    if pct < 50:
-        return "High – sources diverge significantly"
-    return "Very high – forecast unreliable"
+        key = "low"
+    elif pct < 25:
+        key = "moderate"
+    elif pct < 50:
+        key = "high"
+    else:
+        key = "very_high"
+    return _translate_selector(language, "uncertainty_label", key)
 
 
-def _quality_label(rmse: float) -> str:
+def _quality_label(rmse: float, language: str = "en") -> str:
+    """Return a translated label for the source quality level."""
     if rmse < 0.5:
-        return "Excellent"
-    if rmse < 1.0:
-        return "Good"
-    if rmse < 2.0:
-        return "Fair"
-    return "Poor"
+        key = "excellent"
+    elif rmse < 1.0:
+        key = "good"
+    elif rmse < 2.0:
+        key = "fair"
+    else:
+        key = "poor"
+    return _translate_selector(language, "quality_label", key)

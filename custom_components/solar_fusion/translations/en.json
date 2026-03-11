@@ -72,5 +72,22 @@
         }
       }
     }
+  },
+  "selector": {
+    "uncertainty_label": {
+      "low": "Low – sources agree well",
+      "moderate": "Moderate – some disagreement",
+      "high": "High – sources diverge significantly",
+      "very_high": "Very high – forecast unreliable"
+    },
+    "quality_label": {
+      "excellent": "Excellent",
+      "good": "Good",
+      "fair": "Fair",
+      "poor": "Poor"
+    },
+    "snapshot_state": {
+      "pending": "Pending"
+    }
   }
 }

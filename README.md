@@ -75,17 +75,17 @@ With an instance named `Dach`, sensors are named `Solar Fusion Dach – …`. Wi
 
 | Sensor | Unit | Description |
 |--------|------|-------------|
-| `… Fused Today` | kWh | Calibrated, optimised forecast for today |
-| `… Fused Tomorrow` | kWh | Calibrated, optimised forecast for tomorrow |
-| `… Hourly Forecast` | kWh | Combined today+tomorrow hourly breakdown (in attributes) |
-| `… Forecast Uncertainty` | % | Disagreement between sources as % of hourly mean |
-| `… <Source> RMSE` | kWh | Per-source accuracy metrics and calibration status |
-| `… Morning Snapshot` | — | 06:00 forecast snapshot used as RMSE reference |
-| `… PV Tagesproduktion` | kWh | Built-in daily production meter (resets at midnight) |
+| `… Forecast – Today` | kWh | Calibrated, optimised forecast for today |
+| `… Forecast – Tomorrow` | kWh | Calibrated, optimised forecast for tomorrow |
+| `… Forecast – Hourly` | kWh | Combined today+tomorrow hourly breakdown (in attributes) |
+| `… Forecast – Uncertainty` | % | Disagreement between sources as % of hourly mean |
+| `… Quality – <Source>` | kWh | Per-source accuracy metrics and calibration status |
+| `… Diagnostics – Morning Snapshot` | — | 06:00 forecast snapshot used as RMSE reference |
+| `… Diagnostics – PV Daily Production` | kWh | Built-in daily production meter (resets at midnight) |
 
 ---
 
-### Fused Today / Fused Tomorrow
+### Forecast – Today / Forecast – Tomorrow
 
 State: calibrated fused daily total in kWh.
 
@@ -111,7 +111,7 @@ last_updated: "2026-03-11T14:00:00"
 
 ---
 
-### Hourly Forecast
+### Forecast – Hourly
 
 State: combined today + tomorrow total in kWh.
 
@@ -132,7 +132,7 @@ The `forecast` attribute contains both days in a single dict, keyed by ISO hour 
 
 ---
 
-### Forecast Uncertainty
+### Forecast – Uncertainty
 
 State: weighted standard deviation of sources as % of the fused hourly mean.
 
@@ -155,9 +155,11 @@ source_weights:
 
 ---
 
-### Source RMSE sensors (one per source)
+### Quality – &lt;Source&gt; (one per source)
 
 State: RMSE in kWh (root mean square error of daily forecast vs. actual production).
+
+> **Note:** The `quality_label` attribute only appears once sufficient history has been collected (≥ 3 days). Before that, `rmse_kwh` is `null` and no label is shown.
 
 | Quality label | RMSE range |
 |---------------|-----------|
@@ -190,7 +192,7 @@ quality_label: "Fair"
 
 ---
 
-### Morning Snapshot
+### Diagnostics – Morning Snapshot
 
 State: ISO timestamp of today's 06:00 snapshot (`2026-03-11T06:00`), or `pending` if not yet taken.
 
@@ -218,15 +220,17 @@ The `history` dict is directly usable in ApexCharts / template cards to plot how
 
 ---
 
-### PV Tagesproduktion (daily meter)
+### Diagnostics – PV Daily Production
 
 A built-in daily production meter sensor that replaces the need for an external `utility_meter` helper. It resets automatically at midnight and persists its value across HA restarts.
+
+> **Only created when PV production sensor(s) are configured** in Step 3 of the setup. Without a configured PV sensor, this entity does not exist and Solar Fusion uses equal weights permanently.
 
 Supports both sensor types:
 - **`total_increasing`** (lifetime kWh counter): tracks the delta since midnight
 - **Daily-resetting sensors**: passes through the current value directly
 
-When multiple PV sensors are configured, their values are **summed** into a single daily total. This sensor is also used internally by Solar Fusion as the preferred source for nightly accuracy recording.
+When multiple PV sensors are configured, their values are **summed** into a single daily total. This sensor is also used internally by Solar Fusion as the preferred source for nightly accuracy recording — taking priority over reading the raw PV sensors directly from the HA recorder.
 
 Key attributes:
 
@@ -287,7 +291,7 @@ Every update interval:
 
   Nightly (after midnight, on first update of the new day):
   7. Read yesterday's actual production from HA recorder
-     (PV Tagesproduktion meter preferred; falls back to summing PV sensors)
+     (Diagnostics – PV Daily Production meter preferred; falls back to summing PV sensors)
   8. Compare actual against the 06:00 morning snapshot for each source
   9. Store (forecast_kwh, actual_kwh) pair in history for each source
  10. Invalidate isotonic cache for affected seasonal windows
@@ -303,7 +307,7 @@ Solar Fusion supports multiple config entries — one per array, or one combined
 
 **Scenario: two arrays with separate production sensors**
 
-The recommended approach is a single combined instance, selecting both PV sensors in the settings step (Solar Fusion sums them automatically into the `PV Tagesproduktion` sensor).
+The recommended approach is a single combined instance, selecting both PV sensors in the settings step (Solar Fusion sums them automatically into the `Diagnostics – PV Daily Production` sensor).
 
 Alternatively, use a template sensor:
 
@@ -333,7 +337,7 @@ automation:
     at: "22:00:00"
   condition:
     condition: numeric_state
-    entity_id: sensor.solar_fusion_dach_fused_tomorrow
+    entity_id: sensor.solar_fusion_dach_forecast_tomorrow
     below: 10
   action:
     service: switch.turn_on
@@ -347,14 +351,14 @@ automation:
 
 ```
 Forecast.Solar entities    ──┐  daily kWh + hourly Wh (wh_hours attr)
-Open-Meteo Solar entities  ──┼──► Solar Fusion ──► Fused Today / Tomorrow sensors
-Solcast entities           ──┘  daily kWh + hourly Wh (detailedHourly attr)    │
-                                        │                                        ├──► Hourly Forecast sensor
-                                        │                                        ├──► Forecast Uncertainty sensor
-                                        │                                        ├──► Source RMSE sensors (×N)
-                                        │                                        └──► Morning Snapshot sensor
+Open-Meteo Solar entities  ──┼──► Solar Fusion ──► Forecast – Today / Tomorrow
+Solcast entities           ──┘  daily kWh + hourly Wh (detailedHourly attr)  │
+                                        │                                      ├──► Forecast – Hourly
+                                        │                                      ├──► Forecast – Uncertainty
+                                        │                                      ├──► Quality – <Source> (×N)
+                                        │                                      └──► Diagnostics – Morning Snapshot
 
-Actual PV sensor(s) (opt.) ──────────────► PV Tagesproduktion (daily meter)
+Actual PV sensor(s) (opt.) ──────────────► Diagnostics – PV Daily Production
                                                     │
                                            Nightly accuracy recording
                                            → isotonic regression update
