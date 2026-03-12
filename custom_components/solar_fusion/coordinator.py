@@ -10,6 +10,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.event import async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .const import (
     CONF_PV_ENTITY,
@@ -300,7 +301,14 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.history import get_significant_states
 
-            start = datetime(target_date.year, target_date.month, target_date.day)
+            # Use timezone-aware datetimes so the recorder query covers the
+            # correct local calendar day. A naive datetime would be interpreted
+            # as UTC, shifting the window by the local UTC offset (e.g. +1/+2 h
+            # in Central Europe) and causing yesterday's production to be missed
+            # or read from the wrong day.
+            start = dt_util.start_of_local_day(
+                datetime(target_date.year, target_date.month, target_date.day)
+            )
             end = start + timedelta(days=1)
 
             instance = get_instance(self.hass)

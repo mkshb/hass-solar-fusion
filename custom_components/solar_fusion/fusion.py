@@ -311,9 +311,10 @@ class FusionEngine:
         self._history[:] = [r for r in self._history if r["date"] != date_str]
 
         for reading in readings:
-            forecast_kwh = (
-                reading.today_kwh if target_date == date.today() else reading.tomorrow_kwh
-            )
+            # When called from _async_maybe_record_yesterday, readings come from
+            # the morning snapshot where today_kwh holds the forecast for target_date
+            # and tomorrow_kwh is always 0.0. Using today_kwh is always correct here.
+            forecast_kwh = reading.today_kwh
             self._history.append({
                 "date": date_str,
                 "source": reading.source_id,

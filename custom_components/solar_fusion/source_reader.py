@@ -156,15 +156,55 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
     )
 
 
+def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional[str]]:
+    """
+    Find Open-Meteo today/tomorrow entities via entity registry.
+
+    Open-Meteo Solar Forecast (domain: open_meteo_solar_forecast) is a fork of
+    Forecast.Solar and may register entities with the same default name
+    (sensor.energy_production_today). Resolving via the registry ensures we
+    read the correct entity and never collide with Forecast.Solar.
+
+    Falls back to hardcoded OPEN_METEO_TODAY/TOMORROW constants if no matching
+    entity is found in the registry.
+    """
+    from homeassistant.helpers import entity_registry as er
+    registry = er.async_get(hass)
+
+    today_id = None
+    tomorrow_id = None
+
+    for entry in registry.entities.values():
+        if entry.platform != "open_meteo_solar_forecast" or entry.domain != "sensor":
+            continue
+        eid_lower = entry.entity_id.lower()
+        if any(k in eid_lower for k in ("_today", "_heute", "_energy_today")):
+            today_id = entry.entity_id
+        elif any(k in eid_lower for k in ("_tomorrow", "_morgen", "_energy_tomorrow")):
+            tomorrow_id = entry.entity_id
+
+    return today_id or OPEN_METEO_TODAY, tomorrow_id or OPEN_METEO_TOMORROW
+
+
 def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceReading:
     """
     Read from the Open-Meteo Solar Forecast HACS integration.
 
     The integration is a fork of forecast_solar and exposes the same entity
-    structure and attribute names.
+    structure and attribute names, but registers under its own domain
+    (open_meteo_solar_forecast). Entities are resolved via the entity registry
+    to avoid reading the same entity as Forecast.Solar when both share the
+    default name 'sensor.energy_production_today'.
     """
-    today_id = entity_map.get("today", OPEN_METEO_TODAY)
-    tomorrow_id = entity_map.get("tomorrow", OPEN_METEO_TOMORROW)
+    # Prefer explicit user overrides, then registry lookup, then hardcoded fallback
+    if entity_map.get("today") and entity_map.get("tomorrow"):
+        today_id = entity_map["today"]
+        tomorrow_id = entity_map["tomorrow"]
+    else:
+        today_id, tomorrow_id = _find_open_meteo_entities(hass)
+        # Allow partial override
+        today_id = entity_map.get("today") or today_id
+        tomorrow_id = entity_map.get("tomorrow") or tomorrow_id
 
     today_state = _require_state(hass, today_id, SOURCE_OPEN_METEO)
     tomorrow_state = _require_state(hass, tomorrow_id, SOURCE_OPEN_METEO)

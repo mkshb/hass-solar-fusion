@@ -1,7 +1,9 @@
 """Sensor platform for Solar Fusion."""
 from __future__ import annotations
 
+import json as _json
 import logging
+import os as _os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -26,13 +28,8 @@ _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
 
 
-
 def _entity_name(entry: ConfigEntry, suffix: str) -> str:
-    """Return a fixed English entity name prefixed with the instance name.
-
-    Entity names are intentionally never translated so that entity_ids remain
-    stable and consistent regardless of the HA UI language.
-    """
+    """Return a fixed English entity name prefixed with the instance name."""
     instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
     if instance:
         return f"Solar Fusion {instance} – {suffix}"
@@ -57,7 +54,6 @@ async def async_setup_entry(
     for source_id in config_entry.data.get(CONF_SOURCES_KEY, []):
         entities.append(SourceQualitySensor(coordinator, config_entry, source_id))
 
-    # Add the built-in daily meter if PV sensor(s) are configured
     pv_entities: List[str] = config_entry.data.get(CONF_PV_ENTITIES) or []
     if not pv_entities and config_entry.data.get(CONF_PV_ENTITY):
         pv_entities = [config_entry.data[CONF_PV_ENTITY]]
@@ -68,23 +64,10 @@ async def async_setup_entry(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Built-in daily PV meter  (replaces external utility_meter helper)
+# Built-in daily PV meter
 # ──────────────────────────────────────────────────────────────────────────────
 
 class PVDailyMeterSensor(RestoreEntity, SensorEntity):
-    """
-    Tracks daily PV production, supporting one or multiple source sensors.
-
-    When multiple source sensors are configured (e.g. Dach + Garage), their
-    values are summed to produce a single combined daily total.
-
-    Works with both sensor types:
-    - total_increasing (lifetime kWh counter): tracks delta since midnight
-    - daily-resetting sensor (already resets at midnight): passes through max value
-
-    Resets itself at midnight and persists its state across HA restarts.
-    """
-
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -97,18 +80,14 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._attr_unique_id = f"{entry.entry_id}_pv_daily_meter"
         self._attr_name = _entity_name(entry, "Diagnostics – PV Daily Production")
         self._attr_device_info = _device(entry)
-
         self._value: Optional[float] = None
-        # Per-source tracking: {entity_id: {"start": float, "state_class": str}}
         self._source_state: Dict[str, Dict] = {
             eid: {"start": None, "state_class": None} for eid in source_entity_ids
         }
         self._today: date = date.today()
 
     async def async_added_to_hass(self) -> None:
-        """Restore state and subscribe to source sensors + midnight."""
         await super().async_added_to_hass()
-
         last = await self.async_get_last_state()
         if last and last.state not in (None, "unknown", "unavailable"):
             try:
@@ -123,21 +102,16 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             except (ValueError, TypeError):
                 pass
 
-        # Track all source sensors
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, self._source_entity_ids, self._handle_source_change
             )
         )
-
-        # Reset at midnight
         self.async_on_remove(
             async_track_time_change(
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
             )
         )
-
-        # Seed day_start values from current source states
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
             if state and state.state not in ("unknown", "unavailable"):
@@ -151,34 +125,25 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
     @callback
     def _handle_source_change(self, event) -> None:
-        """Recalculate summed daily total when any source sensor changes."""
         entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
         if not entity_id or new_state is None or new_state.state in ("unknown", "unavailable"):
             return
-
         try:
             current_val = float(new_state.state)
         except (ValueError, TypeError):
             return
-
         src = self._source_state[entity_id]
         src["state_class"] = new_state.attributes.get("state_class", "")
-
-        # Day rollover without midnight event
         if date.today() != self._today:
             self._reset()
             return
-
         if src["start"] is None:
             src["start"] = current_val
-
-        # Recalculate total across all sources
         self._value = round(self._calculate_total(), 3)
         self.async_write_ha_state()
 
     def _calculate_total(self) -> float:
-        """Sum today's production across all configured source sensors."""
         total = 0.0
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
@@ -199,11 +164,9 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
     @callback
     def _handle_midnight(self, now: datetime) -> None:
-        """Reset meter at midnight."""
         self._reset()
 
     def _reset(self) -> None:
-        """Reset all source tracking for a new day."""
         _LOGGER.debug("PV daily meter reset for new day")
         self._today = date.today()
         for eid in self._source_entity_ids:
@@ -229,7 +192,6 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             "source_count": len(self._source_entity_ids),
             "source_entities": self._source_entity_ids,
         }
-        # Per-source day_start values for debugging / state restore
         for eid in self._source_entity_ids:
             key = f"day_start_{eid.replace('.', '_')}"
             attrs[key] = self._source_state[eid]["start"]
@@ -237,7 +199,6 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-
 
 def _device(entry: ConfigEntry) -> DeviceInfo:
     instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
@@ -264,6 +225,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry, day: str) -> None:
         super().__init__(coordinator)
         self._day = day
+        self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_fused_{day}"
         self._attr_name = _entity_name(entry, f"Forecast – {day.capitalize()}")
         self._attr_device_info = _device(entry)
@@ -282,7 +244,31 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         weights = data.get("weights", {})
         hourly = data.get(f"fused_{self._day}", {})
         raw = data.get("raw_readings", {})
+        quality = data.get("source_quality", {})
+
+        # Compact per-source summary for the Card – single entity is enough
+        sources = {}
+        for sid, vals in raw.items():
+            q = quality.get(sid, {})
+            rmse = q.get("rmse")
+            sources[sid] = {
+                "name": SOURCE_NAMES.get(sid, sid),
+                "today_kwh": vals.get("today_kwh"),
+                "tomorrow_kwh": vals.get("tomorrow_kwh"),
+                "weight": round(weights.get(sid, 0), 3),
+                "rmse_kwh": rmse,
+                "mae_kwh": q.get("mae"),
+                "bias_kwh": q.get("bias"),
+                "days_evaluated": q.get("days_evaluated", 0),
+                "calibration_mode": q.get("calibration_mode", "none"),
+                "quality_label": _quality_label(rmse, self.hass.config.language) if rmse is not None else None,
+            }
+
         return {
+            "sources": sources,
+            "fused_today_kwh": data.get("fused_today_kwh"),
+            "fused_tomorrow_kwh": data.get("fused_tomorrow_kwh"),
+            "uncertainty_pct": data.get("uncertainty_pct"),
             "source_weights": {
                 SOURCE_NAMES.get(k, k): round(v, 3) for k, v in weights.items()
             },
@@ -294,6 +280,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
             "active_sources": [SOURCE_NAMES.get(s, s) for s in data.get("active_sources", [])],
             "missing_sources": [SOURCE_NAMES.get(s, s) for s in data.get("missing_sources", [])],
             "last_updated": data.get("last_updated"),
+            "history": self.coordinator._history[-30:],
         }
 
 
@@ -314,7 +301,6 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> Optional[float]:
-        """Combined today + tomorrow total as state."""
         data = self.coordinator.data
         if not data:
             return None
@@ -425,14 +411,6 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
-    """
-    Exposes the 06:00 forecast snapshots used as RMSE reference values.
-
-    State  : ISO timestamp of today's snapshot ("2026-03-11T06:00"), or
-             "pending" if the snapshot has not been taken yet today.
-    Attrs  : today's per-source values + full snapshot history (last 30 days).
-    """
-
     _attr_icon = "mdi:weather-sunset-up"
     _attr_native_unit_of_measurement = None
 
@@ -448,7 +426,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
         snapshots = self.coordinator._morning_snapshots
         if today_str in snapshots:
             return f"{today_str}T06:00"
-        return "pending"  # translation key: selector.snapshot_state.pending
+        return "pending"
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
@@ -460,18 +438,13 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
             "snapshot_taken": today_str in snapshots,
             "snapshot_time": f"{today_str}T06:00" if today_str in snapshots else None,
         }
-
-        # Today's per-source values as flat attributes for easy use in Lovelace
         for source_id, kwh in today_snap.items():
             label = SOURCE_NAMES.get(source_id, source_id)
             attrs[f"{label.lower().replace(' ', '_').replace('.', '')}_kwh"] = round(kwh, 3)
-
-        # Full history dict for ApexCharts / template cards
         attrs["history"] = {
             d: {SOURCE_NAMES.get(s, s): round(v, 3) for s, v in vals.items()}
             for d, vals in sorted(snapshots.items(), reverse=True)
         }
-
         return attrs
 
 
@@ -479,15 +452,11 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 # Label helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-import json as _json
-import os as _os
-
 _TRANSLATIONS_DIR = _os.path.join(_os.path.dirname(__file__), "translations")
 _TRANSLATIONS_CACHE: dict = {}
 
 
 def _load_translations(language: str) -> dict:
-    """Load and cache translations for the given language, falling back to 'en'."""
     if language not in _TRANSLATIONS_CACHE:
         for lang in (language, "en"):
             path = _os.path.join(_TRANSLATIONS_DIR, f"{lang}.json")
@@ -503,7 +472,6 @@ def _load_translations(language: str) -> dict:
 
 
 def _translate_selector(language: str, section: str, key: str) -> str:
-    """Return translated selector label, falling back to English, then the key itself."""
     for lang in (language, "en"):
         t = _load_translations(lang)
         try:
@@ -514,7 +482,6 @@ def _translate_selector(language: str, section: str, key: str) -> str:
 
 
 def _uncertainty_label(pct: float, language: str = "en") -> str:
-    """Return a translated label for the uncertainty level."""
     if pct < 10:
         key = "low"
     elif pct < 25:
@@ -527,7 +494,6 @@ def _uncertainty_label(pct: float, language: str = "en") -> str:
 
 
 def _quality_label(rmse: float, language: str = "en") -> str:
-    """Return a translated label for the source quality level."""
     if rmse < 0.5:
         key = "excellent"
     elif rmse < 1.0:
