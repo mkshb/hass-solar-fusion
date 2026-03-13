@@ -311,12 +311,16 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> Optional[float]:
+        """Return the fused forecast for the current hour in kWh."""
         data = self.coordinator.data
         if not data:
             return None
-        return round(
-            (data.get("fused_today_kwh") or 0) + (data.get("fused_tomorrow_kwh") or 0), 2
-        )
+        current_slot = dt_util.now().strftime("%Y-%m-%dT%H:00")
+        hourly = data.get("fused_today", {})
+        wh = hourly.get(current_slot)
+        if wh is None:
+            return None
+        return round(wh / 1000, 3)
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
