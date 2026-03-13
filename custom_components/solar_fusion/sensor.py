@@ -1,9 +1,7 @@
 """Sensor platform for Solar Fusion."""
 from __future__ import annotations
 
-import json as _json
 import logging
-import os as _os
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -452,36 +450,21 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 # Label helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-_TRANSLATIONS_DIR = _os.path.join(_os.path.dirname(__file__), "translations")
-_TRANSLATIONS_CACHE: dict = {}
-
-
-def _load_translations(language: str) -> dict:
-    if language not in _TRANSLATIONS_CACHE:
-        for lang in (language, "en"):
-            path = _os.path.join(_TRANSLATIONS_DIR, f"{lang}.json")
-            try:
-                with open(path, encoding="utf-8") as f:
-                    _TRANSLATIONS_CACHE[language] = _json.load(f)
-                    break
-            except (FileNotFoundError, _json.JSONDecodeError):
-                continue
-        else:
-            _TRANSLATIONS_CACHE[language] = {}
-    return _TRANSLATIONS_CACHE[language]
-
-
-def _translate_selector(language: str, section: str, key: str) -> str:
-    for lang in (language, "en"):
-        t = _load_translations(lang)
-        try:
-            return t["selector"][section][key]
-        except KeyError:
-            continue
-    return key
-
-
 def _uncertainty_label(pct: float, language: str = "en") -> str:
+    labels = {
+        "de": {
+            "low": "Niedrig – Quellen stimmen gut überein",
+            "moderate": "Mittel – geringe Abweichungen",
+            "high": "Hoch – Quellen weichen deutlich ab",
+            "very_high": "Sehr hoch – Prognose unzuverlässig",
+        },
+        "en": {
+            "low": "Low – sources agree well",
+            "moderate": "Moderate – some disagreement",
+            "high": "High – sources diverge significantly",
+            "very_high": "Very high – forecast unreliable",
+        },
+    }
     if pct < 10:
         key = "low"
     elif pct < 25:
@@ -490,10 +473,14 @@ def _uncertainty_label(pct: float, language: str = "en") -> str:
         key = "high"
     else:
         key = "very_high"
-    return _translate_selector(language, "uncertainty_label", key)
+    return labels.get(language, labels["en"])[key]
 
 
 def _quality_label(rmse: float, language: str = "en") -> str:
+    labels = {
+        "de": {"excellent": "Ausgezeichnet", "good": "Gut", "fair": "Befriedigend", "poor": "Schlecht"},
+        "en": {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor"},
+    }
     if rmse < 0.5:
         key = "excellent"
     elif rmse < 1.0:
@@ -502,4 +489,4 @@ def _quality_label(rmse: float, language: str = "en") -> str:
         key = "fair"
     else:
         key = "poor"
-    return _translate_selector(language, "quality_label", key)
+    return labels.get(language, labels["en"])[key]
