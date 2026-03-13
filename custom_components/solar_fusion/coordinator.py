@@ -284,6 +284,12 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._fusion.record_actual(yesterday, actual_kwh, reference_readings)
         _LOGGER.info("Recorded actual %.3f kWh for %s", actual_kwh, date_str)
 
+    async def async_take_snapshot_now(self) -> None:
+        """Manually trigger a morning snapshot on the next coordinator update."""
+        _LOGGER.info("Manual snapshot requested – will be taken on next update")
+        self._snapshot_pending = True
+        await self.async_refresh()
+
     @property
     def history(self) -> List[Dict]:
         """Public read-only view of the history records."""
