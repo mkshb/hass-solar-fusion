@@ -56,7 +56,9 @@ async def async_setup_entry(
     entities: List[SensorEntity] = [
         FusedForecastSensor(coordinator, config_entry, "today"),
         FusedForecastSensor(coordinator, config_entry, "tomorrow"),
-        FusedHourlySensor(coordinator, config_entry),
+        FusedHourlySensor(coordinator, config_entry, hour_offset=0),
+        FusedHourlySensor(coordinator, config_entry, hour_offset=1),
+        FusedHourlySensor(coordinator, config_entry, hour_offset=2),
         ForecastUncertaintySensor(coordinator, config_entry),
         MorningSnapshotSensor(coordinator, config_entry),
     ]
@@ -295,29 +297,47 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Full hourly JSON sensor (both days combined)
+# Hourly forecast sensors (this hour / next hour / in 2 hours)
 # ──────────────────────────────────────────────────────────────────────────────
 
+_HOURLY_SENSOR_META = {
+    # offset → (unique_id_suffix, display_name)
+    0: ("fused_hourly",       "Forecast – This Hour"),
+    1: ("fused_hourly_plus1", "Forecast – Next Hour"),
+    2: ("fused_hourly_plus2", "Forecast – In 2 Hours"),
+}
+
+
 class FusedHourlySensor(CoordinatorEntity, SensorEntity):
+    """Fused forecast for a specific hour offset (0 = current, 1 = next, 2 = in 2 h)."""
+
     _attr_icon = "mdi:chart-bell-curve-cumulative"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 
-    def __init__(self, coordinator, entry) -> None:
+    def __init__(self, coordinator, entry, hour_offset: int = 0) -> None:
         super().__init__(coordinator)
-        self._attr_unique_id = f"{entry.entry_id}_fused_hourly"
-        self._attr_name = _entity_name(entry, "Forecast – Hourly")
+        self._hour_offset = hour_offset
+        uid_suffix, display = _HOURLY_SENSOR_META[hour_offset]
+        self._attr_unique_id = f"{entry.entry_id}_{uid_suffix}"
+        self._attr_name = _entity_name(entry, display)
         self._attr_device_info = _device(entry)
+
+    def _forecast_slot(self) -> tuple[str, Optional[float]]:
+        """Return (slot_str, wh_or_None) for this sensor's hour offset."""
+        from datetime import timedelta
+        data = self.coordinator.data
+        if not data:
+            return "", None
+        target = dt_util.now().replace(minute=0, second=0, microsecond=0) + timedelta(hours=self._hour_offset)
+        slot_str = target.strftime("%Y-%m-%dT%H:00")
+        combined = {**data.get("fused_today", {}), **data.get("fused_tomorrow", {})}
+        return slot_str, combined.get(slot_str)
 
     @property
     def native_value(self) -> Optional[float]:
-        """Return the fused forecast for the current hour in kWh."""
-        data = self.coordinator.data
-        if not data:
-            return None
-        current_slot = dt_util.now().strftime("%Y-%m-%dT%H:00")
-        hourly = data.get("fused_today", {})
-        wh = hourly.get(current_slot)
+        """Return the fused forecast for the target hour in kWh."""
+        _, wh = self._forecast_slot()
         if wh is None:
             return None
         return round(wh / 1000, 3)
@@ -327,14 +347,17 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data
         if not data:
             return {}
-        today_h = data.get("fused_today", {})
-        tomorrow_h = data.get("fused_tomorrow", {})
-        combined = {**today_h, **tomorrow_h}
-        return {
-            "forecast": {k: round(v, 0) for k, v in sorted(combined.items())},
-            "today_kwh": data.get("fused_today_kwh"),
-            "tomorrow_kwh": data.get("fused_tomorrow_kwh"),
-        }
+        slot_str, _ = self._forecast_slot()
+        attrs: Dict[str, Any] = {"forecast_slot": slot_str}
+        # Full hourly breakdown only on the "this hour" sensor to avoid redundancy
+        if self._hour_offset == 0:
+            today_h = data.get("fused_today", {})
+            tomorrow_h = data.get("fused_tomorrow", {})
+            combined = {**today_h, **tomorrow_h}
+            attrs["forecast"] = {k: round(v, 0) for k, v in sorted(combined.items())}
+            attrs["today_kwh"] = data.get("fused_today_kwh")
+            attrs["tomorrow_kwh"] = data.get("fused_tomorrow_kwh")
+        return attrs
 
 
 # ──────────────────────────────────────────────────────────────────────────────
