@@ -158,12 +158,17 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
 
 def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional[str]]:
     """
-    Find Open-Meteo today/tomorrow entities via entity registry.
+    Find Open-Meteo energy_production_today/tomorrow entities via entity registry.
 
     Open-Meteo Solar Forecast (domain: open_meteo_solar_forecast) is a fork of
     Forecast.Solar and may register entities with the same default name
     (sensor.energy_production_today). Resolving via the registry ensures we
     read the correct entity and never collide with Forecast.Solar.
+
+    The match is intentionally strict: only entities whose ID contains
+    "energy_production_today" / "energy_production_tomorrow" are accepted.
+    This avoids false matches on other Open-Meteo sensors that also contain
+    "_today" in their name, e.g. "power_highest_peak_time_today".
 
     Falls back to hardcoded OPEN_METEO_TODAY/TOMORROW constants if no matching
     entity is found in the registry.
@@ -178,13 +183,18 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
         if entry.platform != "open_meteo_solar_forecast" or entry.domain != "sensor":
             continue
         eid_lower = entry.entity_id.lower()
-        if any(k in eid_lower for k in ("_today", "_heute", "_energy_today")):
+        if "energy_production_today" in eid_lower:
             today_id = entry.entity_id
-        elif any(k in eid_lower for k in ("_tomorrow", "_morgen", "_energy_tomorrow")):
+        elif "energy_production_tomorrow" in eid_lower:
             tomorrow_id = entry.entity_id
         if today_id and tomorrow_id:
             break
 
+    _LOGGER.debug(
+        "Open-Meteo entity lookup → today=%s, tomorrow=%s",
+        today_id or f"(not found, fallback: {OPEN_METEO_TODAY})",
+        tomorrow_id or f"(not found, fallback: {OPEN_METEO_TOMORROW})",
+    )
     return today_id or OPEN_METEO_TODAY, tomorrow_id or OPEN_METEO_TOMORROW
 
 
@@ -216,6 +226,10 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
 
     today_kwh = _parse_float(today_state.state, today_id)
     tomorrow_kwh = _parse_float(tomorrow_state.state, tomorrow_id)
+    _LOGGER.debug(
+        "Open-Meteo reading → entity=%s state=%s kWh (tomorrow: %s → %s kWh)",
+        today_id, today_state.state, tomorrow_id, tomorrow_state.state,
+    )
 
     hourly_today = _extract_wh_hours(today_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
     hourly_tomorrow = _extract_wh_hours(tomorrow_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
@@ -231,7 +245,14 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
 
 def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional[str]]:
     """
-    Find Solcast today/tomorrow entities via entity registry.
+    Find Solcast forecast_today/forecast_tomorrow entities via entity registry.
+
+    The match is intentionally strict: only entities whose ID contains
+    "forecast_today" / "forecast_tomorrow" (or German equivalents) are
+    accepted. This avoids false matches on other Solcast sensors that also
+    contain "_today", e.g. "remaining_today" (which counts *down* during
+    the day and would corrupt the forecast value).
+
     Falls back to hardcoded IDs if registry lookup fails.
     Returns (today_entity_id, tomorrow_entity_id).
     """
@@ -244,16 +265,19 @@ def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional
     for entry in registry.entities.values():
         if entry.platform != "solcast_solar" or entry.domain != "sensor":
             continue
-        eid = entry.entity_id
-        # Match any entity whose ID contains "today" or "prognose_heute" etc.
-        eid_lower = eid.lower()
-        if any(k in eid_lower for k in ("_today", "_heute", "_forecast_today", "_prognose_heute")):
-            today_id = eid
-        elif any(k in eid_lower for k in ("_tomorrow", "_morgen", "_forecast_tomorrow", "_prognose_morgen")):
-            tomorrow_id = eid
+        eid_lower = entry.entity_id.lower()
+        if any(k in eid_lower for k in ("forecast_today", "prognose_heute")):
+            today_id = entry.entity_id
+        elif any(k in eid_lower for k in ("forecast_tomorrow", "prognose_morgen")):
+            tomorrow_id = entry.entity_id
         if today_id and tomorrow_id:
             break
 
+    _LOGGER.debug(
+        "Solcast entity lookup → today=%s, tomorrow=%s",
+        today_id or f"(not found, fallback: {SOLCAST_TODAY})",
+        tomorrow_id or f"(not found, fallback: {SOLCAST_TOMORROW})",
+    )
     return today_id or SOLCAST_TODAY, tomorrow_id or SOLCAST_TOMORROW
 
 
