@@ -72,5 +72,11 @@
         }
       }
     }
+  },
+  "services": {
+    "take_snapshot": {
+      "name": "Morning Snapshot aufnehmen",
+      "description": "Löst den Morgen-Forecast-Snapshot (06:00 Uhr) für alle Solar Fusion Instanzen manuell aus. Nützlich nach der Ersteinrichtung oder einem späten Neustart, um das Genauigkeits-Tracking ohne Warten bis zum nächsten Morgen zu initialisieren."
+    }
   }
 }

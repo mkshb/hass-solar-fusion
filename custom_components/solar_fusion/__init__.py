@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
@@ -25,6 +25,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     as a forecast provider.
     """
     hass.data.setdefault(DOMAIN, {})
+
+    async def handle_take_snapshot(call: ServiceCall) -> None:
+        """Manually trigger a morning snapshot for all Solar Fusion instances."""
+        coordinators = [
+            c for c in hass.data.get(DOMAIN, {}).values()
+            if isinstance(c, SolarForecastCoordinator)
+        ]
+        if not coordinators:
+            _LOGGER.warning("take_snapshot: no active Solar Fusion instances found")
+            return
+        for coordinator in coordinators:
+            await coordinator.async_take_snapshot_now()
+
+    hass.services.async_register(DOMAIN, "take_snapshot", handle_take_snapshot)
     return True
 
 
