@@ -196,15 +196,18 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
     to avoid reading the same entity as Forecast.Solar when both share the
     default name 'sensor.energy_production_today'.
     """
-    # Prefer explicit user overrides, then registry lookup, then hardcoded fallback
-    if entity_map.get("today") and entity_map.get("tomorrow"):
-        today_id = entity_map["today"]
-        tomorrow_id = entity_map["tomorrow"]
-    else:
-        today_id, tomorrow_id = _find_open_meteo_entities(hass)
-        # Allow partial override
-        today_id = entity_map.get("today") or today_id
-        tomorrow_id = entity_map.get("tomorrow") or tomorrow_id
+    # Always resolve via entity registry to avoid reading Forecast.Solar entities.
+    # Both integrations share the same default entity name, so the registry lookup
+    # is the only reliable way to get the correct Open-Meteo entity.
+    # Entity map values override the registry result only when explicitly set to
+    # a value different from the ambiguous default constant.
+    today_id, tomorrow_id = _find_open_meteo_entities(hass)
+    override_today = entity_map.get("today", "")
+    override_tomorrow = entity_map.get("tomorrow", "")
+    if override_today and override_today != OPEN_METEO_TODAY:
+        today_id = override_today
+    if override_tomorrow and override_tomorrow != OPEN_METEO_TOMORROW:
+        tomorrow_id = override_tomorrow
 
     today_state = _require_state(hass, today_id, SOURCE_OPEN_METEO)
     tomorrow_state = _require_state(hass, tomorrow_id, SOURCE_OPEN_METEO)
