@@ -1,5 +1,7 @@
 # Solar Fusion
 
+> **Note:** This is a very early version of the integration. Features and configuration are subject to significant change. Use at your own risk.
+
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 
 A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own.
@@ -39,7 +41,7 @@ Solar Fusion is most useful when **two or more** sources are installed, but work
 ## Installation
 
 1. In HACS → Integrations → ⋮ → Custom repositories:
-   Add `https://github.com/yourusername/solar-fusion` as an **Integration**
+   Add `https://github.com/mkshb/hass-solar-fusion` as an **Integration**
 2. Install **Solar Fusion** and restart Home Assistant
 3. Go to **Settings → Devices & Services → Add Integration** → Search *Solar Fusion*
 
@@ -60,6 +62,8 @@ The default entity IDs used by each integration are pre-filled. Adjust only if y
 | Solcast | `sensor.solcast_pv_forecast_forecast_today` | `sensor.solcast_pv_forecast_forecast_tomorrow` |
 
 **Solcast entity discovery:** Solar Fusion automatically searches the HA entity registry for Solcast sensors, including localised names (e.g. German: `prognose_heute` / `prognose_morgen`). Manual overrides are only needed in unusual setups.
+
+**Open-Meteo entity discovery:** Open-Meteo Solar Forecast uses the same approach — Solar Fusion resolves its entities via the registry to avoid collisions with Forecast.Solar (both share the default name `sensor.energy_production_today`). Localised names (e.g. `_heute` / `_morgen` or `_energy_today` / `_energy_tomorrow`) are found automatically.
 
 ### Step 3 – Settings
 - **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
@@ -100,6 +104,9 @@ source_values_kwh:
   Forecast.Solar: 18.4
   Open-Meteo Solar Forecast: 17.1
   Solcast PV Forecast: 19.2
+fused_today_kwh: 18.4
+fused_tomorrow_kwh: 16.1
+uncertainty_pct: 8.2
 hourly_forecast_wh:
   "2026-03-12T06:00": 28.0
   "2026-03-12T07:00": 165.6
@@ -107,6 +114,26 @@ hourly_forecast_wh:
 active_sources: [Forecast.Solar, Solcast PV Forecast]
 missing_sources: [Open-Meteo Solar Forecast]
 last_updated: "2026-03-11T14:00:00"
+sources:                          # compact per-source summary (used by the companion card)
+  forecast_solar:
+    name: "Forecast.Solar"
+    today_kwh: 18.4
+    tomorrow_kwh: 16.8
+    weight: 0.412
+    rmse_kwh: 1.24
+    mae_kwh: 0.98
+    bias_kwh: -0.31
+    days_evaluated: 12
+    calibration_mode: "isotonic (23 seasonal pts)"
+    quality_label: "Fair"
+  solcast:
+    ...
+history:                          # last 30 raw history records
+  - date: "2026-03-11"
+    source: "forecast_solar"
+    forecast_kwh: 18.4
+    actual_kwh: 17.9
+  - ...
 ```
 
 ---
@@ -344,6 +371,23 @@ automation:
     target:
       entity_id: switch.ev_charger
 ```
+
+---
+
+## Energy Dashboard integration
+
+Solar Fusion registers as a native **solar forecast provider** for the HA Energy Dashboard. Once installed, it appears in the forecast dropdown alongside Forecast.Solar and Solcast.
+
+**Setup:**
+
+1. Go to **Settings → Energy**
+2. Under *Solar panels*, click the pencil icon next to an existing solar panel entry
+3. Under *Forecast*, select **Solar Fusion** (or *Solar Fusion – \<Name\>* for named instances) from the dropdown
+4. Click *Update*
+
+The Energy Dashboard will now display Solar Fusion's combined hourly forecast as the shaded prediction band on the solar production graph.
+
+> **Note:** Each Solar Fusion config entry (instance) registers independently. If you run multiple instances (e.g. one per array), each appears separately in the forecast dropdown.
 
 ---
 
