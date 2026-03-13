@@ -271,7 +271,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
                 "bias_kwh": q.get("bias"),
                 "days_evaluated": q.get("days_evaluated", 0),
                 "calibration_mode": q.get("calibration_mode", "none"),
-                "quality_label": _quality_label(rmse, self.hass.config.language) if rmse is not None else None,
+                "quality_label": _quality_label(rmse) if rmse is not None else None,
             }
 
         return {
@@ -360,7 +360,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
             return {}
         pct = data.get("uncertainty_pct", 0)
         return {
-            "interpretation": _uncertainty_label(pct, self.hass.config.language),
+            "interpretation": _uncertainty_label(pct),
             "source_weights": {
                 SOURCE_NAMES.get(k, k): round(v, 3)
                 for k, v in data.get("weights", {}).items()
@@ -406,7 +406,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
         }
         if q.get("rmse") is not None:
-            attrs["quality_label"] = _quality_label(q["rmse"], self.hass.config.language)
+            attrs["quality_label"] = _quality_label(q["rmse"])
         return attrs
 
     def _quality(self) -> Dict:
@@ -462,20 +462,12 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 # Label helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _uncertainty_label(pct: float, language: str = "en") -> str:
+def _uncertainty_label(pct: float) -> str:
     labels = {
-        "de": {
-            "low": "Niedrig – Quellen stimmen gut überein",
-            "moderate": "Mittel – geringe Abweichungen",
-            "high": "Hoch – Quellen weichen deutlich ab",
-            "very_high": "Sehr hoch – Prognose unzuverlässig",
-        },
-        "en": {
-            "low": "Low – sources agree well",
-            "moderate": "Moderate – some disagreement",
-            "high": "High – sources diverge significantly",
-            "very_high": "Very high – forecast unreliable",
-        },
+        "low": "Low – sources agree well",
+        "moderate": "Moderate – some disagreement",
+        "high": "High – sources diverge significantly",
+        "very_high": "Very high – forecast unreliable",
     }
     if pct < 10:
         key = "low"
@@ -485,14 +477,11 @@ def _uncertainty_label(pct: float, language: str = "en") -> str:
         key = "high"
     else:
         key = "very_high"
-    return labels.get(language, labels["en"])[key]
+    return labels[key]
 
 
-def _quality_label(rmse: float, language: str = "en") -> str:
-    labels = {
-        "de": {"excellent": "Ausgezeichnet", "good": "Gut", "fair": "Befriedigend", "poor": "Schlecht"},
-        "en": {"excellent": "Excellent", "good": "Good", "fair": "Fair", "poor": "Poor"},
-    }
+def _quality_label(rmse: float) -> str:
+    labels = {"excellent": "Top", "good": "Good", "fair": "Okay", "poor": "Bad"}
     if rmse < 0.5:
         key = "excellent"
     elif rmse < 1.0:
@@ -501,4 +490,4 @@ def _quality_label(rmse: float, language: str = "en") -> str:
         key = "fair"
     else:
         key = "poor"
-    return labels.get(language, labels["en"])[key]
+    return labels[key]
