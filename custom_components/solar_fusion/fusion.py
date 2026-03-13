@@ -13,6 +13,8 @@ import math
 from datetime import date, timedelta
 from typing import Dict, List, Optional, Tuple
 
+from homeassistant.util import dt as dt_util
+
 from .const import (
     ALL_SOURCES,
     HISTORY_WINDOW_DAYS,
@@ -122,7 +124,7 @@ def _recent_records(
     window_days: int = HISTORY_WINDOW_DAYS,
 ) -> List[HistoryRecord]:
     """Return the most recent `window_days` records for source_id."""
-    cutoff = (date.today() - timedelta(days=window_days)).isoformat()
+    cutoff = (dt_util.now().date() - timedelta(days=window_days)).isoformat()
     return [r for r in history if r["source"] == source_id and r["date"] >= cutoff]
 
 
@@ -225,6 +227,7 @@ class FusionEngine:
 
         current_month = target_date.month
         source_ids = [r.source_id for r in readings]
+        _today = dt_util.now().date()
         weights = self._compute_weights(source_ids, current_month)
 
         date_str = target_date.isoformat()
@@ -232,13 +235,13 @@ class FusionEngine:
 
         for reading in readings:
             raw_daily = (
-                reading.today_kwh if target_date == date.today() else reading.tomorrow_kwh
+                reading.today_kwh if target_date == _today else reading.tomorrow_kwh
             )
             calibrated_daily = self._calibrate(reading.source_id, raw_daily, current_month)
             hourly_scale = (calibrated_daily / raw_daily) if raw_daily > 0 else 1.0
 
             hourly = (
-                reading.hourly_today if target_date == date.today() else reading.hourly_tomorrow
+                reading.hourly_today if target_date == _today else reading.hourly_tomorrow
             )
             for slot, wh in hourly.items():
                 if not slot.startswith(date_str):
@@ -251,17 +254,17 @@ class FusionEngine:
             )
             # Build a solar-shape profile from today's data (or generic bell curve)
             # and distribute the daily total across 24 hourly slots.
-            profile = _build_solar_profile(readings, date.today())
+            profile = _build_solar_profile(readings, _today)
 
             for reading in readings:
                 raw_kwh = (
-                    reading.today_kwh if target_date == date.today() else reading.tomorrow_kwh
+                    reading.today_kwh if target_date == _today else reading.tomorrow_kwh
                 )
                 calibrated_kwh = self._calibrate(reading.source_id, raw_kwh, current_month)
                 target_wh = max(0.0, calibrated_kwh * 1000.0)
                 for slot, fraction in profile.items():
                     # Rewrite the date part from today to target_date
-                    day_slot = slot.replace(date.today().isoformat(), date_str)
+                    day_slot = slot.replace(_today.isoformat(), date_str)
                     slots.setdefault(day_slot, {})[reading.source_id] = round(
                         target_wh * fraction, 1
                     )
@@ -280,7 +283,7 @@ class FusionEngine:
         target_wh = sum(
             self._calibrate(
                 r.source_id,
-                r.today_kwh if target_date == date.today() else r.tomorrow_kwh,
+                r.today_kwh if target_date == _today else r.tomorrow_kwh,
                 current_month,
             )
             * weights.get(r.source_id, 0.0)
@@ -348,7 +351,7 @@ class FusionEngine:
 
         Returns {source_id: {rmse, mae, bias, days_evaluated, calibration_mode}}
         """
-        current_month = date.today().month
+        current_month = dt_util.now().date().month
         result = {}
 
         for source_id in ALL_SOURCES:

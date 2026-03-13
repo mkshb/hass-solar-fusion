@@ -1,9 +1,21 @@
 """Sensor platform for Solar Fusion."""
 from __future__ import annotations
 
+import json as _json
 import logging
+import pathlib as _pathlib
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
+
+from homeassistant.util import dt as dt_util
+
+def _manifest_version() -> str:
+    try:
+        return _json.loads((_pathlib.Path(__file__).parent / "manifest.json").read_text())["version"]
+    except Exception:
+        return "unknown"
+
+_MANIFEST_VERSION = _manifest_version()
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
@@ -82,7 +94,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._source_state: Dict[str, Dict] = {
             eid: {"start": None, "state_class": None} for eid in source_entity_ids
         }
-        self._today: date = date.today()
+        self._today: date = dt_util.now().date()
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
@@ -91,7 +103,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             try:
                 self._value = float(last.state)
                 self._today = date.fromisoformat(
-                    last.attributes.get("date", date.today().isoformat())
+                    last.attributes.get("date", dt_util.now().date().isoformat())
                 )
                 for eid in self._source_entity_ids:
                     saved = last.attributes.get(f"day_start_{eid.replace('.', '_')}")
@@ -133,7 +145,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             return
         src = self._source_state[entity_id]
         src["state_class"] = new_state.attributes.get("state_class", "")
-        if date.today() != self._today:
+        if dt_util.now().date() != self._today:
             self._reset()
             return
         if src["start"] is None:
@@ -166,7 +178,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 
     def _reset(self) -> None:
         _LOGGER.debug("PV daily meter reset for new day")
-        self._today = date.today()
+        self._today = dt_util.now().date()
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
             if state and state.state not in ("unknown", "unavailable"):
@@ -206,7 +218,7 @@ def _device(entry: ConfigEntry) -> DeviceInfo:
         name=device_name,
         manufacturer="Solar Fusion",
         model="Adaptive Ensemble Forecaster",
-        sw_version="1.0.0",
+        sw_version=_MANIFEST_VERSION,
     )
 
 
@@ -278,7 +290,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
             "active_sources": [SOURCE_NAMES.get(s, s) for s in data.get("active_sources", [])],
             "missing_sources": [SOURCE_NAMES.get(s, s) for s in data.get("missing_sources", [])],
             "last_updated": data.get("last_updated"),
-            "history": self.coordinator._history[-30:],
+            "history": self.coordinator.history[-30:],
         }
 
 
@@ -420,16 +432,16 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 
     @property
     def native_value(self) -> str:
-        today_str = date.today().isoformat()
-        snapshots = self.coordinator._morning_snapshots
+        today_str = dt_util.now().date().isoformat()
+        snapshots = self.coordinator.morning_snapshots
         if today_str in snapshots:
             return f"{today_str}T06:00"
         return "pending"
 
     @property
     def extra_state_attributes(self) -> Dict[str, Any]:
-        snapshots = self.coordinator._morning_snapshots
-        today_str = date.today().isoformat()
+        snapshots = self.coordinator.morning_snapshots
+        today_str = dt_util.now().date().isoformat()
         today_snap = snapshots.get(today_str, {})
 
         attrs: Dict[str, Any] = {

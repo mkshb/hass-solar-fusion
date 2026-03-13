@@ -182,6 +182,8 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
             today_id = entry.entity_id
         elif any(k in eid_lower for k in ("_tomorrow", "_morgen", "_energy_tomorrow")):
             tomorrow_id = entry.entity_id
+        if today_id and tomorrow_id:
+            break
 
     return today_id or OPEN_METEO_TODAY, tomorrow_id or OPEN_METEO_TOMORROW
 
@@ -249,6 +251,8 @@ def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional
             today_id = eid
         elif any(k in eid_lower for k in ("_tomorrow", "_morgen", "_forecast_tomorrow", "_prognose_morgen")):
             tomorrow_id = eid
+        if today_id and tomorrow_id:
+            break
 
     return today_id or SOLCAST_TODAY, tomorrow_id or SOLCAST_TOMORROW
 

@@ -94,8 +94,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         )
 
         # If HA started after 06:00 today and we have no snapshot yet, take one now
-        now = datetime.now()
-        today_str = date.today().isoformat()
+        now = dt_util.now()
+        today_str = now.date().isoformat()
         if now.hour >= _SNAPSHOT_HOUR and today_str not in self._morning_snapshots:
             _LOGGER.debug(
                 "HA started after %02d:00 with no snapshot for today – will snapshot on next update",
@@ -153,7 +153,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         await self._async_maybe_record_yesterday(readings)
 
         # ── 4. Fuse forecasts ──────────────────────────────────────────────
-        today = date.today()
+        today = dt_util.now().date()
         tomorrow = today + timedelta(days=1)
 
         fused_today, unc_today, weights = self._fusion.fuse(readings, today)
@@ -182,8 +182,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             },
             "active_sources": [r.source_id for r in readings],
             "missing_sources": missing,
-            "last_updated": datetime.now().isoformat(),
-            "morning_snapshot": self._morning_snapshots.get(date.today().isoformat(), {}),
+            "last_updated": dt_util.now().isoformat(),
+            "morning_snapshot": self._morning_snapshots.get(dt_util.now().date().isoformat(), {}),
         }
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -192,7 +192,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
     def _take_morning_snapshot(self, readings: List[SourceReading]) -> None:
         """Store today's 06:00 forecast as reference for RMSE calculation."""
-        today_str = date.today().isoformat()
+        today_str = dt_util.now().date().isoformat()
         snapshot = {r.source_id: r.today_kwh for r in readings}
         self._morning_snapshots[today_str] = snapshot
         _LOGGER.info(
@@ -201,7 +201,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             {SOURCE_NAMES.get(k, k): f"{v:.2f} kWh" for k, v in snapshot.items()},
         )
         # Prune snapshots older than 30 days to keep storage clean
-        cutoff = (date.today() - timedelta(days=30)).isoformat()
+        cutoff = (dt_util.now().date() - timedelta(days=30)).isoformat()
         self._morning_snapshots = {
             d: v for d, v in self._morning_snapshots.items() if d >= cutoff
         }
@@ -215,8 +215,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     ) -> None:
         """
         Record yesterday's actual production against the morning snapshot.
-        Supports multiple PV sensors (summed) and falls back to current readings
-        if no snapshot exists for yesterday.
+        Supports multiple PV sensors (summed). Skips recording if no morning
+        snapshot exists for yesterday to avoid tainting RMSE history.
         """
         # Build list of PV entity IDs to read – prefer new multi-entity key,
         # fall back to legacy single-entity key for existing installations.
@@ -228,7 +228,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         daily_meter_entity = self._find_daily_meter_entity()
 
-        yesterday = date.today() - timedelta(days=1)
+        yesterday = dt_util.now().date() - timedelta(days=1)
         date_str = yesterday.isoformat()
 
         if any(r["date"] == date_str for r in self._history):
@@ -255,30 +255,44 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("No actual production data found for %s", date_str)
             return
 
-        # Use morning snapshot as reference forecast; fall back to current readings
+        # Use morning snapshot as reference forecast – skip if none exists.
+        # Falling back to current readings would reintroduce the "cheating" effect
+        # (intraday-refined forecasts being used as the reference), so we prefer
+        # to miss one day rather than record inaccurate history.
         morning = self._morning_snapshots.get(date_str)
-        if morning:
-            _LOGGER.debug(
-                "Using morning snapshot for %s RMSE calculation: %s",
+        if not morning:
+            _LOGGER.warning(
+                "No morning snapshot for %s – skipping RMSE recording for this day",
                 date_str,
-                morning,
             )
-            reference_readings = [
-                SourceReading(
-                    source_id=sid,
-                    today_kwh=kwh,
-                    tomorrow_kwh=0.0,
-                )
-                for sid, kwh in morning.items()
-            ]
-        else:
-            _LOGGER.debug(
-                "No morning snapshot for %s – using current readings as fallback", date_str
+            return
+
+        _LOGGER.debug(
+            "Using morning snapshot for %s RMSE calculation: %s",
+            date_str,
+            morning,
+        )
+        reference_readings = [
+            SourceReading(
+                source_id=sid,
+                today_kwh=kwh,
+                tomorrow_kwh=0.0,
             )
-            reference_readings = current_readings
+            for sid, kwh in morning.items()
+        ]
 
         self._fusion.record_actual(yesterday, actual_kwh, reference_readings)
         _LOGGER.info("Recorded actual %.3f kWh for %s", actual_kwh, date_str)
+
+    @property
+    def history(self) -> List[Dict]:
+        """Public read-only view of the history records."""
+        return self._history
+
+    @property
+    def morning_snapshots(self) -> Dict[str, Dict[str, float]]:
+        """Public read-only view of the morning snapshots."""
+        return self._morning_snapshots
 
     def _find_daily_meter_entity(self) -> Optional[str]:
         """Find our PVDailyMeterSensor in the entity registry."""
