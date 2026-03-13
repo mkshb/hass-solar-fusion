@@ -2,7 +2,7 @@
 
 > **Note:** This is a very early version of the integration. Features and configuration are subject to significant change. Use at your own risk.
 
-[![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
+[![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![HACS Validate](https://github.com/mkshb/hass-solar-fusion/actions/workflows/hacs-validate.yaml/badge.svg)](https://github.com/mkshb/hass-solar-fusion/actions/workflows/hacs-validate.yaml) [![GitHub Stars](https://img.shields.io/github/stars/mkshb/hass-solar-fusion?style=flat)](https://github.com/mkshb/hass-solar-fusion/stargazers) [![Last Commit](https://img.shields.io/github/last-commit/mkshb/hass-solar-fusion)](https://github.com/mkshb/hass-solar-fusion/commits/main) [![Open Issues](https://img.shields.io/github/issues/mkshb/hass-solar-fusion)](https://github.com/mkshb/hass-solar-fusion/issues)
 
 A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own.
 
@@ -273,6 +273,76 @@ day_start_sensor_pv_garage: 3821.7
 
 ---
 
+## Energy Dashboard integration
+
+Solar Fusion registers as a native **solar forecast provider** for the HA Energy Dashboard. Once installed, it appears in the forecast dropdown alongside Forecast.Solar and Solcast.
+
+**Setup:**
+
+1. Go to **Settings → Energy**
+2. Under *Solar panels*, click the pencil icon next to an existing solar panel entry
+3. Under *Forecast*, select **Solar Fusion** (or *Solar Fusion – \<Name\>* for named instances) from the dropdown
+4. Click *Update*
+
+The Energy Dashboard will now display Solar Fusion's combined hourly forecast as the shaded prediction band on the solar production graph.
+
+> **Note:** Each Solar Fusion config entry (instance) registers independently. If you run multiple instances (e.g. one per array), each appears separately in the forecast dropdown.
+
+---
+
+## Use in automations
+
+```yaml
+# Charge EV overnight only if tomorrow looks weak
+automation:
+  alias: "EV charge if tomorrow < 10 kWh solar"
+  trigger:
+    platform: time
+    at: "22:00:00"
+  condition:
+    condition: numeric_state
+    entity_id: sensor.solar_fusion_dach_forecast_tomorrow
+    below: 10
+  action:
+    service: switch.turn_on
+    target:
+      entity_id: switch.ev_charger
+```
+
+---
+
+## Multiple instances
+
+Solar Fusion supports multiple config entries — one per array, or one combined instance.
+
+**Scenario: two arrays with separate production sensors**
+
+The recommended approach is a single combined instance, selecting both PV sensors in the settings step (Solar Fusion sums them automatically into the `Diagnostics – PV Daily Production` sensor).
+
+Alternatively, use a template sensor:
+
+```yaml
+# configuration.yaml – optional combined sensor
+template:
+  - sensor:
+      - name: "PV Gesamt"
+        unit_of_measurement: kWh
+        state: >
+          {{ states('sensor.pv_dach') | float(0)
+           + states('sensor.pv_garage') | float(0) }}
+```
+
+> **Note:** Solcast combines all configured rooftop sites into a single set of sensors. A separate Solar Fusion instance per array only makes sense if each array has its own Forecast.Solar or Open-Meteo instance configured with the correct azimuth and tilt.
+
+---
+
+## Companion card
+
+A dedicated Lovelace card for Solar Fusion is maintained in a separate repository:
+**[mkshb/hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card)**
+
+---
+
 ## Hourly data sources
 
 Each integration exposes hourly data in a different way. Solar Fusion reads them as follows:
@@ -325,69 +395,6 @@ Every update interval:
 ```
 
 After approximately **3 weeks** of history, seasonal weighting and isotonic calibration begin to activate. After **one full year**, seasonal calibration covers all months independently.
-
----
-
-## Multiple instances
-
-Solar Fusion supports multiple config entries — one per array, or one combined instance.
-
-**Scenario: two arrays with separate production sensors**
-
-The recommended approach is a single combined instance, selecting both PV sensors in the settings step (Solar Fusion sums them automatically into the `Diagnostics – PV Daily Production` sensor).
-
-Alternatively, use a template sensor:
-
-```yaml
-# configuration.yaml – optional combined sensor
-template:
-  - sensor:
-      - name: "PV Gesamt"
-        unit_of_measurement: kWh
-        state: >
-          {{ states('sensor.pv_dach') | float(0)
-           + states('sensor.pv_garage') | float(0) }}
-```
-
-> **Note:** Solcast combines all configured rooftop sites into a single set of sensors. A separate Solar Fusion instance per array only makes sense if each array has its own Forecast.Solar or Open-Meteo instance configured with the correct azimuth and tilt.
-
----
-
-## Use in automations
-
-```yaml
-# Charge EV overnight only if tomorrow looks weak
-automation:
-  alias: "EV charge if tomorrow < 10 kWh solar"
-  trigger:
-    platform: time
-    at: "22:00:00"
-  condition:
-    condition: numeric_state
-    entity_id: sensor.solar_fusion_dach_forecast_tomorrow
-    below: 10
-  action:
-    service: switch.turn_on
-    target:
-      entity_id: switch.ev_charger
-```
-
----
-
-## Energy Dashboard integration
-
-Solar Fusion registers as a native **solar forecast provider** for the HA Energy Dashboard. Once installed, it appears in the forecast dropdown alongside Forecast.Solar and Solcast.
-
-**Setup:**
-
-1. Go to **Settings → Energy**
-2. Under *Solar panels*, click the pencil icon next to an existing solar panel entry
-3. Under *Forecast*, select **Solar Fusion** (or *Solar Fusion – \<Name\>* for named instances) from the dropdown
-4. Click *Update*
-
-The Energy Dashboard will now display Solar Fusion's combined hourly forecast as the shaded prediction band on the solar production graph.
-
-> **Note:** Each Solar Fusion config entry (instance) registers independently. If you run multiple instances (e.g. one per array), each appears separately in the forecast dropdown.
 
 ---
 
