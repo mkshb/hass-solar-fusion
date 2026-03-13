@@ -183,9 +183,9 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
         if entry.platform != "open_meteo_solar_forecast" or entry.domain != "sensor":
             continue
         eid_lower = entry.entity_id.lower()
-        if "energy_production_today" in eid_lower:
+        if eid_lower.endswith("energy_production_today"):
             today_id = entry.entity_id
-        elif "energy_production_tomorrow" in eid_lower:
+        elif eid_lower.endswith("energy_production_tomorrow"):
             tomorrow_id = entry.entity_id
         if today_id and tomorrow_id:
             break
@@ -266,9 +266,9 @@ def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional
         if entry.platform != "solcast_solar" or entry.domain != "sensor":
             continue
         eid_lower = entry.entity_id.lower()
-        if any(k in eid_lower for k in ("forecast_today", "prognose_heute")):
+        if any(eid_lower.endswith(k) for k in ("forecast_today", "prognose_heute")):
             today_id = entry.entity_id
-        elif any(k in eid_lower for k in ("forecast_tomorrow", "prognose_morgen")):
+        elif any(eid_lower.endswith(k) for k in ("forecast_tomorrow", "prognose_morgen")):
             tomorrow_id = entry.entity_id
         if today_id and tomorrow_id:
             break
