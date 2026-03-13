@@ -1,0 +1,6 @@
+take_snapshot:
+  name: Take Morning Snapshot
+  description: >-
+    Manually triggers the 06:00 morning forecast snapshot for all Solar Fusion
+    instances. Useful after initial setup or a late restart to initialise
+    accuracy tracking without waiting until the next morning.
