@@ -344,6 +344,14 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             if not entity_states:
                 return None
 
+            # HA recorder includes the last known state *before* the query window
+            # (include_start_time_state=True by default).  For daily-reset sensors
+            # that carryover filters into the next day, so strip any state whose
+            # last_updated timestamp predates our window start.
+            entity_states = [s for s in entity_states if s.last_updated >= start]
+            if not entity_states:
+                return None
+
             unit = entity_states[-1].attributes.get("unit_of_measurement", "kWh")
             state_class = entity_states[-1].attributes.get("state_class", "")
             values = []
