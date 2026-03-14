@@ -4,7 +4,29 @@
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/hacs/integration) [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE) [![HACS Validate](https://github.com/mkshb/hass-solar-fusion/actions/workflows/hacs-validate.yaml/badge.svg)](https://github.com/mkshb/hass-solar-fusion/actions/workflows/hacs-validate.yaml) [![GitHub Stars](https://img.shields.io/github/stars/mkshb/hass-solar-fusion?style=flat)](https://github.com/mkshb/hass-solar-fusion/stargazers) [![Last Commit](https://img.shields.io/github/last-commit/mkshb/hass-solar-fusion)](https://github.com/mkshb/hass-solar-fusion/commits/main) [![Open Issues](https://img.shields.io/github/issues/mkshb/hass-solar-fusion)](https://github.com/mkshb/hass-solar-fusion/issues)
 
-A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own.
+A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own, no account required, and no data ever leaving your home.
+
+---
+
+## Why open source — and why it matters for energy data
+
+Your solar production data is more revealing than it looks. Combined with consumption patterns, it tells a detailed story: when you are home, when you sleep, when you go on holiday, what appliances you run. This is personal data worth protecting.
+
+**The problem with closed-source forecast tools:**
+
+- You cannot verify what they do with your data. The algorithm, the data flow, and any telemetry are invisible.
+- Machine learning models often require training data — and that data may be *yours*, collected silently in the background.
+- Even if no data is collected today, a single update can change that — with no way for you to notice.
+- "It works well" is not the same as "it is safe". Both things need to be true.
+
+**What Solar Fusion guarantees instead:**
+
+- **Full auditability.** Every line of code is public. The calibration algorithm, the weighting logic, and the storage format are documented in this README and visible in the source.
+- **Zero external communication.** Solar Fusion never opens a network connection of its own. All data stays inside your Home Assistant instance.
+- **No account, no cloud, no telemetry.** There is nothing to sign up for and nowhere for data to go.
+- **Community oversight.** Open source means bugs, privacy issues, and design decisions are reviewed publicly — not decided behind closed doors.
+
+If you choose tools for your home automation that process your energy data, you should be able to read their source code. If you cannot, you are trusting a promise you cannot verify.
 
 ---
 
