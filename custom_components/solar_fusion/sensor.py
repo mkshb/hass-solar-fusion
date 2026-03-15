@@ -150,6 +150,21 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         if dt_util.now().date() != self._today:
             self._reset()
             return
+        # If a total_increasing source drops below our captured start (e.g. a
+        # utility meter that resets a few seconds after our midnight callback),
+        # treat it as a new baseline so the sensor doesn't stay at 0 all day.
+        if (
+            src["start"] is not None
+            and src.get("state_class") == "total_increasing"
+            and current_val < src["start"]
+        ):
+            _LOGGER.debug(
+                "PV daily meter: source %s dropped from %s to %s – updating baseline",
+                entity_id,
+                src["start"],
+                current_val,
+            )
+            src["start"] = current_val
         if src["start"] is None:
             src["start"] = current_val
         self._value = round(self._calculate_total(), 3)
