@@ -98,6 +98,20 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         }
         self._today: date = dt_util.now().date()
 
+    @staticmethod
+    def _last_reset_is_today(state) -> bool:
+        """Return True if the source entity's last_reset attribute is from today (local time)."""
+        raw = state.attributes.get("last_reset")
+        if not raw:
+            return False
+        try:
+            last_reset = dt_util.parse_datetime(raw)
+            if last_reset is None:
+                return False
+            return dt_util.as_local(last_reset).date() == dt_util.now().date()
+        except (ValueError, TypeError):
+            return False
+
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         last = await self.async_get_last_state()
@@ -124,16 +138,27 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
                 self.hass, self._handle_midnight, hour=0, minute=0, second=5
             )
         )
+        recalculate = False
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
             if state and state.state not in ("unknown", "unavailable"):
                 try:
                     val = float(state.state)
-                    self._source_state[eid]["state_class"] = state.attributes.get("state_class", "")
-                    if self._source_state[eid]["start"] is None:
-                        self._source_state[eid]["start"] = val
+                    src = self._source_state[eid]
+                    src["state_class"] = state.attributes.get("state_class", "")
+                    if self._last_reset_is_today(state):
+                        if src["start"] != 0.0:
+                            _LOGGER.debug("PV daily meter startup: source %s last_reset is today, setting start=0", eid)
+                            src["start"] = 0.0
+                            recalculate = True
+                    elif src["start"] is None:
+                        src["start"] = val
+                        recalculate = True
                 except (ValueError, TypeError):
                     pass
+        if recalculate and dt_util.now().date() == self._today:
+            self._value = round(self._calculate_total(), 3)
+            self.async_write_ha_state()
 
     @callback
     def _handle_source_change(self, event) -> None:
@@ -150,22 +175,11 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         if dt_util.now().date() != self._today:
             self._reset()
             return
-        # If a total_increasing source drops below our captured start (e.g. a
-        # utility meter that resets a few seconds after our midnight callback),
-        # treat it as a new baseline so the sensor doesn't stay at 0 all day.
-        if (
-            src["start"] is not None
-            and src.get("state_class") == "total_increasing"
-            and current_val < src["start"]
-        ):
-            _LOGGER.debug(
-                "PV daily meter: source %s dropped from %s to %s – updating baseline",
-                entity_id,
-                src["start"],
-                current_val,
-            )
-            src["start"] = current_val
-        if src["start"] is None:
+        if self._last_reset_is_today(new_state):
+            if src["start"] != 0.0:
+                _LOGGER.debug("PV daily meter: source %s last_reset is today, setting start=0", entity_id)
+                src["start"] = 0.0
+        elif src["start"] is None:
             src["start"] = current_val
         self._value = round(self._calculate_total(), 3)
         self.async_write_ha_state()
@@ -181,7 +195,9 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             except (ValueError, TypeError):
                 continue
             src = self._source_state[eid]
-            if src["state_class"] == "total_increasing":
+            if self._last_reset_is_today(state):
+                total += val
+            elif src["state_class"] == "total_increasing":
                 start = src["start"] or val
                 delta = max(0.0, val - start)
                 total += delta
@@ -198,14 +214,20 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._today = dt_util.now().date()
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
+            src = self._source_state[eid]
             if state and state.state not in ("unknown", "unavailable"):
                 try:
-                    self._source_state[eid]["start"] = float(state.state)
+                    val = float(state.state)
+                    if self._last_reset_is_today(state):
+                        _LOGGER.debug("PV daily meter reset: source %s last_reset is today, start=0", eid)
+                        src["start"] = 0.0
+                    else:
+                        src["start"] = val
                 except (ValueError, TypeError):
-                    self._source_state[eid]["start"] = None
+                    src["start"] = None
             else:
-                self._source_state[eid]["start"] = None
-        self._value = 0.0
+                src["start"] = None
+        self._value = round(self._calculate_total(), 3)
         self.async_write_ha_state()
 
     @property
