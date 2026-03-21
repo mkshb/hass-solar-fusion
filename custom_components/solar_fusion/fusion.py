@@ -360,7 +360,7 @@ class FusionEngine:
 
             if not recent:
                 result[source_id] = {
-                    "rmse": None, "mae": None, "bias": None,
+                    "rmse": None, "rmse_pct": None, "mae": None, "bias": None,
                     "days_evaluated": 0, "calibration_mode": "none",
                 }
                 continue
@@ -369,6 +369,8 @@ class FusionEngine:
             rmse = math.sqrt(sum(e ** 2 for e in errors) / len(errors))
             mae = sum(abs(e) for e in errors) / len(errors)
             mean_bias = sum(errors) / len(errors)
+            mean_actual = sum(r["actual_kwh"] for r in recent) / len(recent)
+            rmse_pct = round(rmse / mean_actual * 100, 1) if mean_actual > 0 else None
 
             if len(seasonal) >= MIN_ISO_POINTS:
                 cal_mode = f"isotonic ({len(seasonal)} seasonal pts)"
@@ -379,6 +381,7 @@ class FusionEngine:
 
             result[source_id] = {
                 "rmse": round(rmse, 3),
+                "rmse_pct": rmse_pct,
                 "mae": round(mae, 3),
                 "bias": round(mean_bias, 3),
                 "days_evaluated": len(recent),
