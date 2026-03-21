@@ -82,6 +82,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 )
         self._fusion = FusionEngine(self._history)
 
+        # Auto-repair carryover-corrupted actual values in history
+        if self._history:
+            self.hass.async_create_task(self._async_repair_carryover_on_startup())
+
         # Register 06:00 snapshot trigger
         self.config_entry.async_on_unload(
             async_track_time_change(
@@ -290,6 +294,90 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._snapshot_pending = True
         await self.async_refresh()
 
+    async def async_repair_history(
+        self,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> Dict[str, int]:
+        """Re-read actual production for history records from the HA recorder.
+
+        Re-fetches the real production value for every date in the history
+        (optionally filtered by date_from/date_to) and updates the stored
+        actual_kwh.  Useful to fix carryover-corrupted records left behind by
+        the utility-meter timing bug.
+
+        Returns a dict with keys "repaired", "skipped", "unchanged".
+        """
+        pv_entities: List[str] = self._config.get(CONF_PV_ENTITIES) or []
+        if not pv_entities and self._config.get(CONF_PV_ENTITY):
+            pv_entities = [self._config[CONF_PV_ENTITY]]
+        if not pv_entities:
+            _LOGGER.warning("repair_history: no PV entities configured")
+            return {"repaired": 0, "skipped": 0, "unchanged": 0}
+
+        all_dates = sorted({r["date"] for r in self._history})
+        if date_from:
+            all_dates = [d for d in all_dates if d >= date_from]
+        if date_to:
+            all_dates = [d for d in all_dates if d <= date_to]
+
+        repaired = 0
+        skipped = 0
+        unchanged = 0
+        daily_meter = self._find_daily_meter_entity()
+
+        for date_str in all_dates:
+            target = date.fromisoformat(date_str)
+
+            if daily_meter:
+                actual_kwh = await self._async_read_actual_from_history(daily_meter, target)
+            else:
+                actual_kwh = None
+
+            if actual_kwh is None:
+                total = 0.0
+                any_found = False
+                for entity_id in pv_entities:
+                    kwh = await self._async_read_actual_from_history(entity_id, target)
+                    if kwh is not None:
+                        total += kwh
+                        any_found = True
+                actual_kwh = total if any_found else None
+
+            if actual_kwh is None:
+                _LOGGER.debug("repair_history: no recorder data for %s – skipping", date_str)
+                skipped += 1
+                continue
+
+            date_changed = False
+            for record in self._history:
+                if record["date"] == date_str:
+                    if abs(record["actual_kwh"] - actual_kwh) > 0.001:
+                        record["actual_kwh"] = round(actual_kwh, 3)
+                        date_changed = True
+
+            if date_changed:
+                _LOGGER.info(
+                    "repair_history: corrected actual for %s → %.3f kWh", date_str, actual_kwh
+                )
+                repaired += 1
+            else:
+                unchanged += 1
+
+        if repaired > 0:
+            await self._store.async_save({
+                "history": self._history,
+                "morning_snapshots": self._morning_snapshots,
+            })
+            if self._fusion:
+                self._fusion._iso_cache.clear()
+
+        _LOGGER.info(
+            "repair_history: %d corrected, %d skipped (no recorder data), %d unchanged",
+            repaired, skipped, unchanged,
+        )
+        return {"repaired": repaired, "skipped": skipped, "unchanged": unchanged}
+
     @property
     def history(self) -> List[Dict]:
         """Public read-only view of the history records."""
@@ -299,6 +387,34 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     def morning_snapshots(self) -> Dict[str, Dict[str, float]]:
         """Public read-only view of the morning snapshots."""
         return self._morning_snapshots
+
+    async def _async_repair_carryover_on_startup(self) -> None:
+        """Detect and repair carryover-corrupted actual_kwh values in history.
+
+        A carryover record is identified when two consecutive calendar days
+        share an identical actual_kwh value – the signature of the utility-meter
+        not yet having reset when the nightly recording ran.
+        """
+        date_actuals: Dict[str, float] = {}
+        for record in self._history:
+            date_actuals.setdefault(record["date"], record["actual_kwh"])
+
+        sorted_dates = sorted(date_actuals)
+        suspect = []
+        for i in range(1, len(sorted_dates)):
+            cur, prev = sorted_dates[i], sorted_dates[i - 1]
+            gap = (date.fromisoformat(cur) - date.fromisoformat(prev)).days
+            if gap == 1 and date_actuals[cur] == date_actuals[prev]:
+                suspect.append(cur)
+
+        if not suspect:
+            return
+
+        _LOGGER.info(
+            "Detected %d possible carryover date(s) in history: %s – repairing from recorder",
+            len(suspect), suspect,
+        )
+        await self.async_repair_history(date_from=suspect[0], date_to=suspect[-1])
 
     def _find_daily_meter_entity(self) -> Optional[str]:
         """Find our PVDailyMeterSensor in the entity registry."""

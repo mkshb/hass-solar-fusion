@@ -4,3 +4,27 @@ take_snapshot:
     Manually triggers the 06:00 morning forecast snapshot for all Solar Fusion
     instances. Useful after initial setup or a late restart to initialise
     accuracy tracking without waiting until the next morning.
+
+repair_history:
+  name: Repair History
+  description: >-
+    Re-reads actual PV production from the Home Assistant recorder and corrects
+    any corrupted actual_kwh values in the history (e.g. caused by the
+    utility-meter carryover bug). Runs automatically at startup for detected
+    carryover duplicates; call this service manually to repair a specific date
+    range.
+  fields:
+    date_from:
+      name: From date
+      description: First date to repair (YYYY-MM-DD). Defaults to the earliest history entry.
+      required: false
+      example: "2026-03-16"
+      selector:
+        date:
+    date_to:
+      name: To date
+      description: Last date to repair (YYYY-MM-DD). Defaults to the latest history entry.
+      required: false
+      example: "2026-03-19"
+      selector:
+        date:
