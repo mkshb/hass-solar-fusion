@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import logging
+from datetime import date
+
+import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
@@ -39,6 +42,37 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             await coordinator.async_take_snapshot_now()
 
     hass.services.async_register(DOMAIN, "take_snapshot", handle_take_snapshot)
+
+    async def handle_repair_history(call: ServiceCall) -> None:
+        """Re-read actual production from recorder and fix corrupted history."""
+        raw_from = call.data.get("date_from")
+        raw_to = call.data.get("date_to")
+        date_from: str | None = raw_from.isoformat() if isinstance(raw_from, date) else raw_from
+        date_to: str | None = raw_to.isoformat() if isinstance(raw_to, date) else raw_to
+
+        coordinators = [
+            c for c in hass.data.get(DOMAIN, {}).values()
+            if isinstance(c, SolarForecastCoordinator)
+        ]
+        if not coordinators:
+            _LOGGER.warning("repair_history: no active Solar Fusion instances found")
+            return
+        for coordinator in coordinators:
+            result = await coordinator.async_repair_history(
+                date_from=date_from, date_to=date_to
+            )
+            _LOGGER.info("repair_history result: %s", result)
+
+    hass.services.async_register(
+        DOMAIN,
+        "repair_history",
+        handle_repair_history,
+        schema=vol.Schema({
+            vol.Optional("date_from"): cv.date,
+            vol.Optional("date_to"): cv.date,
+        }),
+    )
+
     return True
 
 
