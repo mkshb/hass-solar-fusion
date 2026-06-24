@@ -295,7 +295,11 @@ class FusionEngine:
             scale = target_wh / fused_total
             fused = {slot: round(wh * scale, 1) for slot, wh in fused.items()}
 
-        uncertainty_pct = self._compute_uncertainty(slots, weights, fused)
+        raw_daily = {
+            r.source_id: (r.today_kwh if target_date == _today else r.tomorrow_kwh)
+            for r in readings
+        }
+        uncertainty_pct = self._compute_uncertainty(raw_daily, weights, fused)
         return fused, uncertainty_pct, weights
 
     def record_actual(
@@ -453,10 +457,18 @@ class FusionEngine:
 
     def _compute_weights(self, source_ids: List[str], month: int) -> Dict[str, float]:
         """
-        Compute normalised weights using seasonal RMSE.
+        Compute normalised weights from the bias-corrected error spread.
+
+        Weighting uses the standard deviation of the forecast errors (i.e. RMSE
+        with the systematic mean bias removed: std = sqrt(RMSE² − bias²)) rather
+        than the raw RMSE. A source that is consistently biased but otherwise
+        stable is corrected by _calibrate before fusing, so penalising it for
+        that (removable) bias would down-weight an actually reliable source.
+        Only the irreducible scatter should drive the weight.
+
         Falls back to equal weights when any source lacks sufficient data.
         """
-        rmse_map: Dict[str, Optional[float]] = {}
+        spread_map: Dict[str, Optional[float]] = {}
 
         for sid in source_ids:
             seasonal = _seasonal_records(self._history, sid, month)
@@ -464,18 +476,19 @@ class FusionEngine:
             records = seasonal if len(seasonal) >= MIN_HISTORY_DAYS else recent
 
             if len(records) < MIN_HISTORY_DAYS:
-                rmse_map[sid] = None
+                spread_map[sid] = None
                 continue
 
             errors = [r["forecast_kwh"] - r["actual_kwh"] for r in records]
-            rmse = math.sqrt(sum(e ** 2 for e in errors) / len(errors))
-            rmse_map[sid] = max(rmse, 0.01)
+            mean_err = sum(errors) / len(errors)
+            std = math.sqrt(sum((e - mean_err) ** 2 for e in errors) / len(errors))
+            spread_map[sid] = max(std, 0.01)
 
-        if any(v is None for v in rmse_map.values()):
+        if any(v is None for v in spread_map.values()):
             n = len(source_ids)
             return {s: 1.0 / n for s in source_ids}
 
-        inv = {s: 1.0 / v for s, v in rmse_map.items()}  # type: ignore[operator]
+        inv = {s: 1.0 / v for s, v in spread_map.items()}  # type: ignore[operator]
         total = sum(inv.values())
         return {s: round(v / total, 4) for s, v in inv.items()}
 
@@ -485,31 +498,31 @@ class FusionEngine:
 
     def _compute_uncertainty(
         self,
-        slots: Dict[str, Dict[str, float]],
+        raw_daily: Dict[str, float],
         weights: Dict[str, float],
         fused: HourlyWh,
     ) -> float:
-        fused_total = sum(fused.values())
-        if fused_total == 0 or not fused:
+        """
+        Uncertainty = weighted spread of the *raw* per-source daily forecasts,
+        as a percentage of the fused daily total.
+
+        Using the raw daily totals (e.g. 38 / 67 / 59 kWh) reflects the genuine
+        disagreement between sources. Computing it on the calibrated/scaled
+        hourly slots instead collapses the spread – calibration pulls every
+        source onto roughly the same daily total – which made the figure
+        misleadingly low (e.g. 0.6 %).
+        """
+        items = [(s, v) for s, v in raw_daily.items() if s in weights]
+        w_sum = sum(weights.get(s, 0.0) for s, _ in items)
+        if not items or w_sum <= 0:
             return 0.0
 
-        variances = []
-        for slot, source_vals in slots.items():
-            if slot not in fused:
-                continue
-            fused_val = fused[slot]
-            w_sum = sum(weights.get(s, 0.0) for s in source_vals)
-            if w_sum == 0:
-                continue
-            var = sum(
-                weights.get(s, 0.0) / w_sum * (wh - fused_val) ** 2
-                for s, wh in source_vals.items()
-            )
-            variances.append(var)
+        mean = sum(weights[s] * v for s, v in items) / w_sum
+        variance = sum(weights[s] * (v - mean) ** 2 for s, v in items) / w_sum
+        std = math.sqrt(variance)
 
-        if not variances:
+        fused_total_kwh = sum(fused.values()) / 1000.0
+        ref = fused_total_kwh if fused_total_kwh > 0 else mean
+        if ref <= 0:
             return 0.0
-
-        mean_fused = fused_total / len(fused)
-        std = math.sqrt(sum(variances) / len(variances))
-        return round(min(std / mean_fused * 100, 100.0), 1) if mean_fused > 0 else 0.0
+        return round(min(std / ref * 100, 100.0), 1)
