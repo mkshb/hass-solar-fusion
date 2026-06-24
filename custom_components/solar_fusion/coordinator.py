@@ -23,6 +23,7 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
+from . import calc
 from .fusion import FusionEngine
 from .source_reader import SourceReading, SourceUnavailable, read_source
 
@@ -163,6 +164,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         fused_today, unc_today, weights = self._fusion.fuse(readings, today)
         fused_tomorrow, unc_tomorrow, _ = self._fusion.fuse(readings, tomorrow)
 
+        # Uncertainty is None when fewer than two sources are present (no
+        # cross-validation). Average only the values that are defined.
+        _uncs = [u for u in (unc_today, unc_tomorrow) if u is not None]
+        uncertainty_pct = round(sum(_uncs) / len(_uncs), 1) if _uncs else None
+
         # ── 5. Persist ─────────────────────────────────────────────────────
         await self._store.async_save({
             "history": self._history,
@@ -174,7 +180,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "fused_tomorrow": fused_tomorrow,
             "fused_today_kwh": round(sum(fused_today.values()) / 1000, 3),
             "fused_tomorrow_kwh": round(sum(fused_tomorrow.values()) / 1000, 3),
-            "uncertainty_pct": round((unc_today + unc_tomorrow) / 2, 1),
+            "uncertainty_pct": uncertainty_pct,
             "weights": weights,
             "source_quality": self._fusion.source_quality(),
             "raw_readings": {
@@ -470,18 +476,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
             if "kWh" in unit:
                 if state_class == "total_increasing":
-                    # Sum positive deltas between consecutive readings instead of
-                    # max-min. A daily-reset meter carries the previous day's total
-                    # into the start of the window (the recorder synthesises a state
-                    # at exactly `start`, which the >= filter keeps); max-min would
-                    # then return yesterday's total whenever it exceeded today's.
-                    # Summing only positive deltas ignores the carryover→0 reset
-                    # drop and correctly accumulates from 0, and also handles
-                    # lifetime cumulative meters (no resets → equals last-first).
-                    production = 0.0
-                    for prev, cur in zip(values, values[1:]):
-                        if cur > prev:
-                            production += cur - prev
+                    # Sum positive deltas (carryover-safe); see calc for details.
+                    production = calc.daily_total_from_increasing(values)
                 else:
                     production = max(values)
             else:
