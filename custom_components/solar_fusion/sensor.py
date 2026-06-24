@@ -299,18 +299,18 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         sources = {}
         for sid, vals in raw.items():
             q = quality.get(sid, {})
-            rmse = q.get("rmse")
+            rmse_pct = q.get("rmse_pct")
             sources[sid] = {
                 "name": SOURCE_NAMES.get(sid, sid),
                 "today_kwh": vals.get("today_kwh"),
                 "tomorrow_kwh": vals.get("tomorrow_kwh"),
                 "weight": round(weights.get(sid, 0), 3),
-                "rmse_kwh": rmse,
+                "rmse_kwh": q.get("rmse"),
                 "mae_kwh": q.get("mae"),
                 "bias_kwh": q.get("bias"),
                 "days_evaluated": q.get("days_evaluated", 0),
                 "calibration_mode": q.get("calibration_mode", "none"),
-                "quality_label": _quality_label(rmse) if rmse is not None else None,
+                "quality_label": _quality_label(rmse_pct) if rmse_pct is not None else None,
             }
 
         return {
@@ -469,8 +469,8 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "today_kwh": raw.get("today_kwh"),
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
         }
-        if q.get("rmse") is not None:
-            attrs["quality_label"] = _quality_label(q["rmse"])
+        if q.get("rmse_pct") is not None:
+            attrs["quality_label"] = _quality_label(q["rmse_pct"])
         return attrs
 
     def _quality(self) -> Dict:
@@ -544,13 +544,14 @@ def _uncertainty_label(pct: float) -> str:
     return labels[key]
 
 
-def _quality_label(rmse: float) -> str:
+def _quality_label(rmse_pct: float) -> str:
+    """Return a quality label based on relative RMSE (% of mean actual production)."""
     labels = {"excellent": "Top", "good": "Good", "fair": "Okay", "poor": "Bad"}
-    if rmse < 0.5:
+    if rmse_pct < 5:
         key = "excellent"
-    elif rmse < 1.0:
+    elif rmse_pct < 15:
         key = "good"
-    elif rmse < 2.0:
+    elif rmse_pct < 30:
         key = "fair"
     else:
         key = "poor"

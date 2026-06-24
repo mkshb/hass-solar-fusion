@@ -82,9 +82,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 )
         self._fusion = FusionEngine(self._history)
 
-        # Auto-repair carryover-corrupted actual values in history
+        # Reconcile history against the recorder (fixes legacy carryover corruption)
         if self._history:
-            self.hass.async_create_task(self._async_repair_carryover_on_startup())
+            self.hass.async_create_task(self._async_reconcile_history_on_startup())
 
         # Register 06:00 snapshot trigger
         self.config_entry.async_on_unload(
@@ -371,6 +371,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             })
             if self._fusion:
                 self._fusion._iso_cache.clear()
+            # Rebuild the fused forecast so sensors reflect the corrected history
+            # immediately instead of waiting for the next scheduled update.
+            await self.async_request_refresh()
 
         _LOGGER.info(
             "repair_history: %d corrected, %d skipped (no recorder data), %d unchanged",
@@ -388,33 +391,18 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         """Public read-only view of the morning snapshots."""
         return self._morning_snapshots
 
-    async def _async_repair_carryover_on_startup(self) -> None:
-        """Detect and repair carryover-corrupted actual_kwh values in history.
+    async def _async_reconcile_history_on_startup(self) -> None:
+        """Reconcile every history record against the recorder on startup.
 
-        A carryover record is identified when two consecutive calendar days
-        share an identical actual_kwh value – the signature of the utility-meter
-        not yet having reset when the nightly recording ran.
+        Earlier versions corrupted actual_kwh via a utility-meter carryover bug
+        (yesterday's daily total leaking into today's recording). Rather than
+        guess which dates are affected with a duplicate heuristic – which misses
+        near-duplicates and one-day lags – we unconditionally re-read each stored
+        date from the recorder. The read path is now carryover-safe, so this is
+        idempotent: dates still in the recorder are corrected, purged dates
+        return no data and are left untouched.
         """
-        date_actuals: Dict[str, float] = {}
-        for record in self._history:
-            date_actuals.setdefault(record["date"], record["actual_kwh"])
-
-        sorted_dates = sorted(date_actuals)
-        suspect = []
-        for i in range(1, len(sorted_dates)):
-            cur, prev = sorted_dates[i], sorted_dates[i - 1]
-            gap = (date.fromisoformat(cur) - date.fromisoformat(prev)).days
-            if gap == 1 and date_actuals[cur] == date_actuals[prev]:
-                suspect.append(cur)
-
-        if not suspect:
-            return
-
-        _LOGGER.info(
-            "Detected %d possible carryover date(s) in history: %s – repairing from recorder",
-            len(suspect), suspect,
-        )
-        await self.async_repair_history(date_from=suspect[0], date_to=suspect[-1])
+        await self.async_repair_history()
 
     def _find_daily_meter_entity(self) -> Optional[str]:
         """Find our PVDailyMeterSensor in the entity registry."""
@@ -482,7 +470,18 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
             if "kWh" in unit:
                 if state_class == "total_increasing":
-                    production = max(values) - min(values)
+                    # Sum positive deltas between consecutive readings instead of
+                    # max-min. A daily-reset meter carries the previous day's total
+                    # into the start of the window (the recorder synthesises a state
+                    # at exactly `start`, which the >= filter keeps); max-min would
+                    # then return yesterday's total whenever it exceeded today's.
+                    # Summing only positive deltas ignores the carryover→0 reset
+                    # drop and correctly accumulates from 0, and also handles
+                    # lifetime cumulative meters (no resets → equals last-first).
+                    production = 0.0
+                    for prev, cur in zip(values, values[1:]):
+                        if cur > prev:
+                            production += cur - prev
                 else:
                     production = max(values)
             else:
