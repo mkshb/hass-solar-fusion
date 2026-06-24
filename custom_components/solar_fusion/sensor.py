@@ -31,6 +31,7 @@ from homeassistant.helpers.event import async_track_state_change_event, async_tr
 from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from . import calc
 from .const import ALL_SOURCES, CONF_INSTANCE_NAME, CONF_PV_ENTITY, CONF_PV_ENTITIES, DOMAIN, SOURCE_NAMES
 from .coordinator import SolarForecastCoordinator
 
@@ -299,7 +300,6 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         sources = {}
         for sid, vals in raw.items():
             q = quality.get(sid, {})
-            rmse_pct = q.get("rmse_pct")
             sources[sid] = {
                 "name": SOURCE_NAMES.get(sid, sid),
                 "today_kwh": vals.get("today_kwh"),
@@ -308,9 +308,11 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
                 "rmse_kwh": q.get("rmse"),
                 "mae_kwh": q.get("mae"),
                 "bias_kwh": q.get("bias"),
+                "std_kwh": q.get("std"),
+                "bias_pct": q.get("bias_pct"),
                 "days_evaluated": q.get("days_evaluated", 0),
                 "calibration_mode": q.get("calibration_mode", "none"),
-                "quality_label": _quality_label(rmse_pct) if rmse_pct is not None else None,
+                "quality_label": calc.quality_label(q.get("std_pct"), q.get("bias_pct")),
             }
 
         return {
@@ -422,7 +424,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
         data = self.coordinator.data
         if not data:
             return {}
-        pct = data.get("uncertainty_pct", 0)
+        pct = data.get("uncertainty_pct")
         return {
             "interpretation": _uncertainty_label(pct),
             "source_weights": {
@@ -463,14 +465,18 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "rmse_kwh": q.get("rmse"),
             "mae_kwh": q.get("mae"),
             "bias_kwh": q.get("bias"),
+            "std_kwh": q.get("std"),
+            "bias_pct": q.get("bias_pct"),
+            "scatter_pct": q.get("std_pct"),
             "days_evaluated": q.get("days_evaluated", 0),
             "calibration_mode": q.get("calibration_mode", "none"),
             "weight": round(data.get("weights", {}).get(self._source_id, 0), 3),
             "today_kwh": raw.get("today_kwh"),
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
         }
-        if q.get("rmse_pct") is not None:
-            attrs["quality_label"] = _quality_label(q["rmse_pct"])
+        label = calc.quality_label(q.get("std_pct"), q.get("bias_pct"))
+        if label is not None:
+            attrs["quality_label"] = label
         return attrs
 
     def _quality(self) -> Dict:
@@ -526,7 +532,9 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 # Label helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _uncertainty_label(pct: float) -> str:
+def _uncertainty_label(pct: Optional[float]) -> str:
+    if pct is None:
+        return "Unknown – only one source, no cross-validation"
     labels = {
         "low": "Low – sources agree well",
         "moderate": "Moderate – some disagreement",
@@ -544,15 +552,5 @@ def _uncertainty_label(pct: float) -> str:
     return labels[key]
 
 
-def _quality_label(rmse_pct: float) -> str:
-    """Return a quality label based on relative RMSE (% of mean actual production)."""
-    labels = {"excellent": "Top", "good": "Good", "fair": "Okay", "poor": "Bad"}
-    if rmse_pct < 5:
-        key = "excellent"
-    elif rmse_pct < 15:
-        key = "good"
-    elif rmse_pct < 30:
-        key = "fair"
-    else:
-        key = "poor"
-    return labels[key]
+# The per-source quality label now lives in calc.quality_label (categorical,
+# separating correctable bias from irreducible scatter).
