@@ -15,6 +15,7 @@ from typing import Dict, List, Optional, Tuple
 
 from homeassistant.util import dt as dt_util
 
+from . import calc
 from .const import (
     ALL_SOURCES,
     HISTORY_WINDOW_DAYS,
@@ -36,64 +37,9 @@ SEASONAL_MONTH_RADIUS = 1
 HistoryRecord = Dict
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Isotonic regression (pool-adjacent-violators algorithm)
-# ──────────────────────────────────────────────────────────────────────────────
-
-def _isotonic_regression(x: List[float], y: List[float]) -> Tuple[List[float], List[float]]:
-    """
-    Fit a monotone non-decreasing step function to (x, y) pairs.
-
-    Returns (knots_x, knots_y) – the fitted step function.
-    Uses the pool-adjacent-violators algorithm; no external dependencies.
-    """
-    if not x:
-        return [], []
-
-    pairs = sorted(zip(x, y), key=lambda p: p[0])
-    xs = [p[0] for p in pairs]
-    ys = [p[1] for p in pairs]
-
-    blocks: List[List[float]] = [[v] for v in ys]
-    block_xs: List[List[float]] = [[v] for v in xs]
-
-    i = 0
-    while i < len(blocks) - 1:
-        if _block_mean(blocks[i]) > _block_mean(blocks[i + 1]):
-            blocks[i] = blocks[i] + blocks[i + 1]
-            block_xs[i] = block_xs[i] + block_xs[i + 1]
-            blocks.pop(i + 1)
-            block_xs.pop(i + 1)
-            if i > 0:
-                i -= 1
-        else:
-            i += 1
-
-    knots_x = [sum(bx) / len(bx) for bx in block_xs]
-    knots_y = [_block_mean(b) for b in blocks]
-    return knots_x, knots_y
-
-
-def _block_mean(block: List[float]) -> float:
-    return sum(block) / len(block)
-
-
-def _isotonic_predict(knots_x: List[float], knots_y: List[float], value: float) -> float:
-    """
-    Predict calibrated value by interpolating between isotonic knots.
-    Extrapolates flat outside the knot range.
-    """
-    if not knots_x:
-        return value
-    if value <= knots_x[0]:
-        return knots_y[0]
-    if value >= knots_x[-1]:
-        return knots_y[-1]
-    for i in range(len(knots_x) - 1):
-        if knots_x[i] <= value <= knots_x[i + 1]:
-            t = (value - knots_x[i]) / (knots_x[i + 1] - knots_x[i])
-            return knots_y[i] + t * (knots_y[i + 1] - knots_y[i])
-    return knots_y[-1]
+# Isotonic regression and other dependency-free numerics live in calc.py
+# (see calc.isotonic_fit / calc.isotonic_predict) so they can be unit-tested
+# without a running Home Assistant.
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -212,7 +158,7 @@ class FusionEngine:
         self,
         readings: List[SourceReading],
         target_date: date,
-    ) -> Tuple[HourlyWh, float, Dict[str, float]]:
+    ) -> Tuple[HourlyWh, Optional[float], Dict[str, float]]:
         """
         Fuse SourceReadings for target_date.
 
@@ -365,6 +311,7 @@ class FusionEngine:
             if not recent:
                 result[source_id] = {
                     "rmse": None, "rmse_pct": None, "mae": None, "bias": None,
+                    "std": None, "std_pct": None, "bias_pct": None,
                     "days_evaluated": 0, "calibration_mode": "none",
                 }
                 continue
@@ -373,8 +320,16 @@ class FusionEngine:
             rmse = math.sqrt(sum(e ** 2 for e in errors) / len(errors))
             mae = sum(abs(e) for e in errors) / len(errors)
             mean_bias = sum(errors) / len(errors)
+            # Scatter = error spread with the systematic bias removed. This is
+            # the part calibration cannot fix and is what drives both the weight
+            # (see _compute_weights) and the quality label.
+            std = math.sqrt(sum((e - mean_bias) ** 2 for e in errors) / len(errors))
             mean_actual = sum(r["actual_kwh"] for r in recent) / len(recent)
             rmse_pct = round(rmse / mean_actual * 100, 1) if mean_actual > 0 else None
+            std_pct = round(std / mean_actual * 100, 1) if mean_actual > 0 else None
+            bias_pct = (
+                round(abs(mean_bias) / mean_actual * 100, 1) if mean_actual > 0 else None
+            )
 
             if len(seasonal) >= MIN_ISO_POINTS:
                 cal_mode = f"isotonic ({len(seasonal)} seasonal pts)"
@@ -388,6 +343,9 @@ class FusionEngine:
                 "rmse_pct": rmse_pct,
                 "mae": round(mae, 3),
                 "bias": round(mean_bias, 3),
+                "std": round(std, 3),
+                "std_pct": std_pct,
+                "bias_pct": bias_pct,
                 "days_evaluated": len(recent),
                 "calibration_mode": cal_mode,
             }
@@ -430,7 +388,7 @@ class FusionEngine:
         if cached is None or cached[2] != month:
             xs = [r["forecast_kwh"] for r in records]
             ys = [r["actual_kwh"] for r in records]
-            knots_x, knots_y = _isotonic_regression(xs, ys)
+            knots_x, knots_y = calc.isotonic_fit(xs, ys)
             self._iso_cache[source_id] = (knots_x, knots_y, month)
             _LOGGER.debug(
                 "Fitted isotonic regression for %s month=%d: %d knots from %d points",
@@ -439,16 +397,22 @@ class FusionEngine:
         else:
             knots_x, knots_y, _ = cached
 
-        return max(0.0, _isotonic_predict(knots_x, knots_y, raw_kwh))
+        return max(0.0, calc.isotonic_predict(knots_x, knots_y, raw_kwh))
 
     def _calibrate_linear(self, raw_kwh: float, records: List[HistoryRecord]) -> float:
-        """Apply multiplicative linear bias correction, capped at +/-40%."""
+        """Apply multiplicative linear bias correction.
+
+        The factor is clamped to [calc.MIN_BIAS_FACTOR, calc.MAX_BIAS_FACTOR]
+        (0.5–2.0). The previous ±40 % clamp could not correct strongly biased
+        sources (e.g. a Forecast.Solar instance configured at half capacity)
+        during the early 3–19 day window before isotonic calibration applies.
+        """
         valid = [r for r in records if r["forecast_kwh"] > 0]
         if not valid:
             return max(0.0, raw_kwh)
         mean_fc = sum(r["forecast_kwh"] for r in valid) / len(valid)
         mean_ac = sum(r["actual_kwh"] for r in valid) / len(valid)
-        factor = max(0.6, min(1.4, mean_ac / mean_fc if mean_fc > 0 else 1.0))
+        factor = calc.linear_bias_factor(mean_fc, mean_ac)
         return max(0.0, raw_kwh * factor)
 
     # ──────────────────────────────────────────────────────────────────────────
@@ -466,7 +430,9 @@ class FusionEngine:
         that (removable) bias would down-weight an actually reliable source.
         Only the irreducible scatter should drive the weight.
 
-        Falls back to equal weights when any source lacks sufficient data.
+        Sources without enough history keep their slot (spread ``None``) and are
+        filled with the mean spread of the others by calc.inverse_spread_weights,
+        rather than collapsing every source to an equal weight.
         """
         spread_map: Dict[str, Optional[float]] = {}
 
@@ -484,13 +450,7 @@ class FusionEngine:
             std = math.sqrt(sum((e - mean_err) ** 2 for e in errors) / len(errors))
             spread_map[sid] = max(std, 0.01)
 
-        if any(v is None for v in spread_map.values()):
-            n = len(source_ids)
-            return {s: 1.0 / n for s in source_ids}
-
-        inv = {s: 1.0 / v for s, v in spread_map.items()}  # type: ignore[operator]
-        total = sum(inv.values())
-        return {s: round(v / total, 4) for s, v in inv.items()}
+        return calc.inverse_spread_weights(spread_map)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Uncertainty
@@ -501,7 +461,7 @@ class FusionEngine:
         raw_daily: Dict[str, float],
         weights: Dict[str, float],
         fused: HourlyWh,
-    ) -> float:
+    ) -> Optional[float]:
         """
         Uncertainty = weighted spread of the *raw* per-source daily forecasts,
         as a percentage of the fused daily total.
@@ -511,18 +471,10 @@ class FusionEngine:
         hourly slots instead collapses the spread – calibration pulls every
         source onto roughly the same daily total – which made the figure
         misleadingly low (e.g. 0.6 %).
+
+        Returns ``None`` when fewer than two sources are available (no
+        cross-validation possible), so the sensor can show "unknown" instead of
+        a misleading 0 %.
         """
-        items = [(s, v) for s, v in raw_daily.items() if s in weights]
-        w_sum = sum(weights.get(s, 0.0) for s, _ in items)
-        if not items or w_sum <= 0:
-            return 0.0
-
-        mean = sum(weights[s] * v for s, v in items) / w_sum
-        variance = sum(weights[s] * (v - mean) ** 2 for s, v in items) / w_sum
-        std = math.sqrt(variance)
-
         fused_total_kwh = sum(fused.values()) / 1000.0
-        ref = fused_total_kwh if fused_total_kwh > 0 else mean
-        if ref <= 0:
-            return 0.0
-        return round(min(std / ref * 100, 100.0), 1)
+        return calc.weighted_spread_pct(raw_daily, weights, fused_total_kwh)
