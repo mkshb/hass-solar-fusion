@@ -68,7 +68,13 @@
         "description": "{pv_hint}",
         "data": {
           "pv_entities": "PV production sensors (multiple supported)",
-          "update_interval": "Update interval (minutes)"
+          "update_interval": "Update interval (minutes)",
+          "exclusion_factor": "Exclusion threshold k (× RMSE of the best source)",
+          "min_eval_days": "Minimum evaluated days for weighting"
+        },
+        "data_description": {
+          "exclusion_factor": "A source whose RMSE exceeds k times that of the best source gets weight 0. It keeps being evaluated and returns on its own. Default: 2.0.",
+          "min_eval_days": "Until a source has this many evaluated days, all sources are weighted equally. Default: 7."
         }
       }
     }

@@ -68,7 +68,13 @@
         "description": "{pv_hint}",
         "data": {
           "pv_entities": "PV-Produktionssensoren (mehrere möglich)",
-          "update_interval": "Aktualisierungsintervall (Minuten)"
+          "update_interval": "Aktualisierungsintervall (Minuten)",
+          "exclusion_factor": "Ausschlussschwelle k (× RMSE der besten Quelle)",
+          "min_eval_days": "Mindestzahl ausgewerteter Tage für die Gewichtung"
+        },
+        "data_description": {
+          "exclusion_factor": "Eine Quelle, deren RMSE über dem k-Fachen der besten Quelle liegt, bekommt Gewicht 0. Sie wird weiter bewertet und kommt von selbst zurück. Standard: 2,0.",
+          "min_eval_days": "Solange keine Quelle so viele ausgewertete Tage hat, werden alle Quellen gleich gewichtet. Standard: 7."
         }
       }
     }

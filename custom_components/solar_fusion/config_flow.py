@@ -10,8 +10,11 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from . import calc
 from .const import (
     ALL_SOURCES,
+    CONF_EXCLUSION_FACTOR,
+    CONF_MIN_EVAL_DAYS,
     CONF_INSTANCE_NAME,
     CONF_PV_ENTITY,
     CONF_PV_ENTITIES,
@@ -311,6 +314,8 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
             self._data[CONF_PV_ENTITIES] = pv_entities
             self._data[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
             self._data[CONF_UPDATE_INTERVAL] = user_input[CONF_UPDATE_INTERVAL]
+            self._data[CONF_EXCLUSION_FACTOR] = float(user_input[CONF_EXCLUSION_FACTOR])
+            self._data[CONF_MIN_EVAL_DAYS] = int(user_input[CONF_MIN_EVAL_DAYS])
 
             # Persist everything back to config entry data
             new_name = self._data.get(CONF_INSTANCE_NAME, "")
@@ -333,6 +338,22 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
                         default=self._current.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=15, max=360, step=15, mode="slider")
+                    ),
+                    vol.Optional(
+                        CONF_EXCLUSION_FACTOR,
+                        default=self._current.get(
+                            CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=1.0, max=5.0, step=0.1, mode="box")
+                    ),
+                    vol.Optional(
+                        CONF_MIN_EVAL_DAYS,
+                        default=self._current.get(
+                            CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(min=3, max=14, step=1, mode="box")
                     ),
                 }
             ),

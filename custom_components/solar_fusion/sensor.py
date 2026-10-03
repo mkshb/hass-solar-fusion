@@ -295,6 +295,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         hourly = data.get(f"fused_{self._day}", {})
         raw = data.get("raw_readings", {})
         quality = data.get("source_quality", {})
+        details = data.get("weight_details", {})
 
         # Compact per-source summary for the Card – single entity is enough
         sources = {}
@@ -305,6 +306,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
                 "today_kwh": vals.get("today_kwh"),
                 "tomorrow_kwh": vals.get("tomorrow_kwh"),
                 "weight": round(weights.get(sid, 0), 3),
+                **_weight_attrs(details.get(sid, {})),
                 "rmse_kwh": q.get("rmse"),
                 "mae_kwh": q.get("mae"),
                 "bias_kwh": q.get("bias"),
@@ -471,6 +473,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
             "days_evaluated": q.get("days_evaluated", 0),
             "calibration_mode": q.get("calibration_mode", "none"),
             "weight": round(data.get("weights", {}).get(self._source_id, 0), 3),
+            **_weight_attrs(data.get("weight_details", {}).get(self._source_id, {})),
             "today_kwh": raw.get("today_kwh"),
             "tomorrow_kwh": raw.get("tomorrow_kwh"),
         }
@@ -526,6 +529,21 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
             for d, vals in sorted(snapshots.items(), reverse=True)
         }
         return attrs
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Weight helpers
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _weight_attrs(info: Dict) -> Dict[str, Any]:
+    """Gewichtungs-Attribute einer Quelle; leere Info (Quelle nicht aktiv) → Standardwerte."""
+    return {
+        "excluded": info.get("excluded", False),
+        "exclusion_reason": info.get("exclusion_reason"),
+        # False → Kalibrierung verschlechtert diese Quelle, sie geht roh in die Fusion ein
+        "calibration_active": info.get("calibration_active", True),
+        "rmse_calibrated_kwh": info.get("rmse_calibrated"),
+    }
 
 
 # ──────────────────────────────────────────────────────────────────────────────

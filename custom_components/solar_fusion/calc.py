@@ -18,6 +18,16 @@ BIAS_SKEWED_PCT = 15.0      # |bias| at/above this (with low scatter) → "Verze
 MIN_BIAS_FACTOR = 0.5
 MAX_BIAS_FACTOR = 2.0
 
+# Gewichtung: Ausschluss ab k × RMSE der besten Quelle, Mindestzahl ausgewerteter
+# Tage, Untergrenze für den RMSE (gegen Division durch fast 0)
+DEFAULT_EXCLUSION_FACTOR = 2.0
+DEFAULT_MIN_EVAL_DAYS = 7
+RMSE_FLOOR_KWH = 0.5
+
+# Hysterese beim Kalibrierungs-Gating: gewechselt wird erst, wenn die andere
+# Variante (roh / kalibriert) um mindestens diesen Anteil besser ist
+CALIBRATION_HYSTERESIS = 0.10
+
 
 def daily_total_from_increasing(values: List[float]) -> float:
     """Daily production from a ``total_increasing`` meter's in-window samples.
@@ -115,30 +125,120 @@ def quality_label(scatter_pct: Optional[float], bias_pct: Optional[float]) -> Op
     return "Genau"
 
 
-def inverse_spread_weights(
-    spread_map: Dict[str, Optional[float]]
-) -> Dict[str, float]:
-    """Normalised 1/spread weights.
+def rmse(errors: List[float]) -> Optional[float]:
+    """Root mean square of ``errors``; ``None`` for an empty list."""
+    if not errors:
+        return None
+    return math.sqrt(sum(e * e for e in errors) / len(errors))
 
-    Sources lacking sufficient history (value ``None``) are assigned the *mean*
-    spread of the sources that do have data, so adding a new source no longer
-    collapses every source to an equal weight – the established sources keep
-    their learned weighting and the newcomer starts mid-pack. If no source has
-    data at all, falls back to equal weights.
+
+def use_calibration(
+    rmse_raw: Optional[float],
+    rmse_calibrated: Optional[float],
+    days: int,
+    min_days: int = DEFAULT_MIN_EVAL_DAYS,
+    previous: Optional[bool] = None,
+    hysteresis: float = CALIBRATION_HYSTERESIS,
+) -> bool:
+    """Ob eine Quelle kalibriert in die Fusion eingeht.
+
+    Kalibrierung lohnt sich nur, wenn sie den Fehler nachweislich senkt: Über
+    dieselben ausgewerteten Tage muss der RMSE des kalibrierten Wertes (ohne
+    Kenntnis des jeweiligen Tages ermittelt) kleiner sein als der des Rohwertes.
+    Eine isotonische Kurve aus wenigen Dutzend Punkten kann eine gute Quelle
+    sonst verschlechtern (Regression zur Mitte, flache Extrapolation).
+
+    Unter ``min_days`` ausgewerteten Tagen ist der Vergleich zu unsicher; dann
+    bleibt es beim bisherigen Verhalten (kalibrieren).
+
+    Hysterese: Mit ``previous`` (letzte Entscheidung) wird nur gewechselt, wenn
+    die andere Variante um mindestens ``hysteresis`` (Anteil) besser ist. Liegen
+    beide RMSE nah beieinander, pendelt die Quelle so nicht täglich zwischen roh
+    und kalibriert. Ohne ``previous`` entscheidet der einfache Vergleich.
     """
-    if not spread_map:
+    if rmse_raw is None or rmse_calibrated is None or days < min_days:
+        return True
+    if previous is True:
+        return rmse_calibrated <= rmse_raw * (1 + hysteresis)
+    if previous is False:
+        return rmse_calibrated < rmse_raw * (1 - hysteresis)
+    return rmse_calibrated < rmse_raw
+
+
+def inverse_variance_weights(
+    rmse_map: Dict[str, Optional[float]],
+    days_map: Dict[str, int],
+    exclusion_factor: float = DEFAULT_EXCLUSION_FACTOR,
+    min_days: int = DEFAULT_MIN_EVAL_DAYS,
+    rmse_floor: float = RMSE_FLOOR_KWH,
+) -> Dict[str, Dict]:
+    """Gewichte nach inverser Fehlervarianz mit Ausschlussschwelle.
+
+    ``rmse_map`` enthält je aktiver Quelle den RMSE (kWh) des Wertes, der
+    tatsächlich in die Fusion eingeht, ``days_map`` die Zahl der ausgewerteten
+    Tage. Ablauf:
+
+    * Quellen mit weniger als ``min_days`` Tagen (oder ohne RMSE) sind in der
+      Anlaufphase. Haben *alle* Quellen zu wenig Tage, gibt es gleiche Gewichte.
+      Sonst bekommt eine Quelle in der Anlaufphase die mittlere inverse Varianz
+      der nicht ausgeschlossenen Quellen – eine neu hinzugefügte Quelle setzt
+      die gelernte Gewichtung der übrigen also nicht zurück.
+    * Der RMSE wird nach unten auf ``rmse_floor`` begrenzt (keine Division
+      durch fast 0).
+    * Liegt der RMSE einer Quelle über ``exclusion_factor`` × RMSE der besten
+      Quelle, bekommt sie Gewicht 0. Sie wird weiter bewertet und kommt von
+      selbst zurück, sobald ihr Fehler wieder unter die Schwelle fällt.
+    * Alle übrigen: w_i ∝ 1 / RMSE_i², normiert auf Summe 1.
+    * Bleibt keine Quelle übrig (nur bei ``exclusion_factor`` < 1 möglich),
+      zählt allein die beste Quelle.
+
+    Rückgabe je Quelle: ``{"weight", "excluded", "exclusion_reason"}``.
+    """
+    if not rmse_map:
         return {}
-    known = [v for v in spread_map.values() if v is not None]
-    n = len(spread_map)
-    if not known:
-        return {s: 1.0 / n for s in spread_map}
-    fill = sum(known) / len(known)
-    inv = {
-        s: 1.0 / max(v if v is not None else fill, 0.01)
-        for s, v in spread_map.items()
+
+    def _info(weight: float, reason: Optional[str] = None) -> Dict:
+        return {"weight": round(weight, 4), "excluded": reason is not None,
+                "exclusion_reason": reason}
+
+    evaluated = {
+        s: max(v, rmse_floor)
+        for s, v in rmse_map.items()
+        if v is not None and days_map.get(s, 0) >= min_days
     }
+    if not evaluated:
+        n = len(rmse_map)
+        return {s: _info(1.0 / n) for s in rmse_map}
+
+    best_sid = min(evaluated, key=evaluated.get)
+    best = evaluated[best_sid]
+    limit = exclusion_factor * best
+    kept = {s: v for s, v in evaluated.items() if v <= limit}
+    if not kept:
+        kept = {best_sid: best}
+
+    inv = {s: 1.0 / (v * v) for s, v in kept.items()}
+    fill = sum(inv.values()) / len(inv)
+    for s in rmse_map:
+        if s not in evaluated:
+            inv[s] = fill
     total = sum(inv.values())
-    return {s: round(v / total, 4) for s, v in inv.items()}
+
+    result: Dict[str, Dict] = {}
+    for s in rmse_map:
+        if s in inv:
+            result[s] = _info(inv[s] / total)
+        elif evaluated[s] > limit:
+            result[s] = _info(0.0, (
+                f"RMSE {evaluated[s]:.1f} kWh > {exclusion_factor:g} × "
+                f"beste Quelle ({best:.1f} kWh)"
+            ))
+        else:
+            result[s] = _info(0.0, (
+                f"Schwelle {exclusion_factor:g} < 1 schließt alle Quellen aus – "
+                f"nur beste Quelle aktiv"
+            ))
+    return result
 
 
 def weighted_spread_pct(

@@ -37,7 +37,7 @@ Solar Fusion does **not** contact any external service. Instead, it reads the se
 1. Reads daily totals **and hourly breakdowns** from each source's entities
 2. Tracks how accurate each source has been against your actual PV production
 3. Calibrates forecasts using **isotonic regression** (seasonal, non-linear correction) or linear bias correction depending on available history
-4. Combines the calibrated forecasts using **seasonally-weighted averaging** (better sources in the current season get higher weights)
+4. Combines the calibrated forecasts using **inverse-error-variance weighting** (weight ∝ 1 / RMSE² of the calibrated forecast; a source far worse than the best one is excluded)
 5. Exposes the result as new HA sensors
 
 All processing is local. No data leaves Home Assistant.
@@ -91,7 +91,9 @@ The default entity IDs used by each integration are pre-filled. Adjust only if y
 - **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
 - **Update interval**: How often Solar Fusion re-reads the source entities (default: 60 min).
 
-All settings can be changed later via **Settings → Devices & Services → Solar Fusion → Configure**.
+All settings can be changed later via **Settings → Devices & Services → Solar Fusion → Configure**. The **Configure** dialog additionally offers two weighting options:
+- **Exclusion threshold k** (default 2.0): a source whose RMSE exceeds k × the RMSE of the best source gets weight 0. It keeps being evaluated and returns automatically once its error drops below the threshold.
+- **Minimum evaluated days** (default 7): until a source has this many evaluated days, it is weighted neutrally; if no source has enough days, all sources are weighted equally.
 
 ---
 
@@ -142,6 +144,10 @@ sources:                          # compact per-source summary (used by the comp
     today_kwh: 18.4
     tomorrow_kwh: 16.8
     weight: 0.412
+    excluded: false
+    exclusion_reason: null        # e.g. "RMSE 11.9 kWh > 2 × beste Quelle (4.0 kWh)"
+    calibration_active: true      # false → calibration made this source worse, fused raw
+    rmse_calibrated_kwh: 1.31     # RMSE of the calibrated value
     rmse_kwh: 1.24
     mae_kwh: 0.98
     bias_kwh: -0.31
@@ -226,6 +232,10 @@ bias_kwh: -0.31        # negative = source consistently over-forecasts
 days_evaluated: 12
 calibration_mode: "isotonic (23 seasonal pts)"
 weight: 0.63
+excluded: false        # true → weight 0 (see exclusion_reason)
+exclusion_reason: null
+calibration_active: true   # false → fused raw, because calibration increased the error
+rmse_calibrated_kwh: 1.31  # weight uses this when calibration_active, else rmse_kwh
 today_kwh: 14.2        # raw (uncalibrated) value from this source
 tomorrow_kwh: 11.8
 quality_label: "Fair"
@@ -394,10 +404,25 @@ Every update interval:
        factor = mean(actual) / mean(forecast), capped at ±40 %
   2c. No correction — insufficient history
 
+  Calibration gating per source:
+  2d. Over the last 14 days, compare the RMSE of the raw forecast with the RMSE
+      of the calibrated forecast. Each day is calibrated using only the history
+      available before that day (an in-sample error would be too optimistic).
+      Calibration is applied only if it lowers the RMSE; otherwise the source
+      is fused raw (calibration_active: false). With < 7 evaluated days the
+      source is always calibrated.
+      Hysteresis: once decided, a source only switches when the other variant
+      is better by at least 10 %, so it does not flip daily when both are close.
+      The last decision is persisted with the history.
+
   Weighting per source:
-  3. Seasonal RMSE = RMSE over months within ±1 of current month
-     weight_i = 1 / seasonal_RMSE_i
-     Falls back to equal weights if any source has < 3 data points
+  3. RMSE of the value that actually enters the fusion (raw or calibrated,
+     see 2d), floored at 0.5 kWh.
+     Source with RMSE > k × RMSE of the best source → weight 0 (default k = 2.0)
+     Remaining sources: weight_i ∝ 1 / RMSE_i², normalised to sum 1
+     Sources with < 7 evaluated days get the mean weight of the others;
+     equal weights while no source has 7 days. Missing sources are dropped
+     and the rest renormalised. Daily and hourly fusion use the same weights.
 
   Hourly fusion:
   4. Calibrated hourly Wh values fused as weighted average per slot

@@ -4,7 +4,7 @@ Forecast Fusion Engine for Solar Fusion.
 Combines multiple SourceReadings using adaptive weighted averaging with:
   - Seasonal bias segmentation  (per-month bias/RMSE windows)
   - Isotonic regression calibration  (monotone, non-linear correction)
-  - Adaptive RMSE weighting
+  - Gewichtung nach inverser Fehlervarianz mit Ausschlussschwelle
 """
 from __future__ import annotations
 
@@ -68,10 +68,20 @@ def _recent_records(
     history: List[HistoryRecord],
     source_id: str,
     window_days: int = HISTORY_WINDOW_DAYS,
+    today: Optional[date] = None,
 ) -> List[HistoryRecord]:
-    """Return the most recent `window_days` records for source_id."""
-    cutoff = (dt_util.now().date() - timedelta(days=window_days)).isoformat()
+    """Return the most recent `window_days` records for source_id.
+
+    ``today`` legt den Stichtag fest (Standard: heute); damit lässt sich das
+    Fenster so bilden, wie es an einem früheren Tag ausgesehen hätte.
+    """
+    ref = today or dt_util.now().date()
+    cutoff = (ref - timedelta(days=window_days)).isoformat()
     return [r for r in history if r["source"] == source_id and r["date"] >= cutoff]
+
+
+def _round_or_none(value: Optional[float]) -> Optional[float]:
+    return round(value, 3) if value is not None else None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -132,11 +142,17 @@ class FusionEngine:
     Algorithm
     ---------
     1. Collect past daily totals per source and compare to actual production.
-    2. Compute seasonal RMSE per source (months within +/-1 of current month).
-    3. Weight = 1 / seasonal_RMSE  (lower error -> higher weight).
-    4. Normalise weights to sum to 1; fall back to equal weights when
-       fewer than MIN_HISTORY_DAYS records exist.
-    5. Apply isotonic regression calibration per source before combining:
+    2. RMSE je Quelle über die letzten HISTORY_WINDOW_DAYS Tage, roh und
+       kalibriert (so wie die Engine den Wert am jeweiligen Morgen erzeugt hätte,
+       nur mit damals vorhandener Historie). Kalibriert fusioniert wird eine
+       Quelle nur, wenn das den RMSE senkt; ihr Gewicht kommt aus dem RMSE des
+       Wertes, der tatsächlich fusioniert wird.
+    3. Gewicht ∝ 1 / RMSE²; Quellen mit RMSE > k × RMSE der besten Quelle
+       bekommen Gewicht 0 (siehe calc.inverse_variance_weights).
+    4. Gleiche Gewichte, solange keine Quelle die Mindestzahl ausgewerteter
+       Tage erreicht.
+    5. Apply isotonic regression calibration per source before combining
+       (only where step 2 found it helpful):
        - If >= MIN_ISO_POINTS seasonal records exist: isotonic curve
        - Else if >= MIN_HISTORY_DAYS records: linear multiplicative bias
        - Else: no correction (factor 1.0)
@@ -145,10 +161,24 @@ class FusionEngine:
     8. Return fused forecast + uncertainty (weighted spread of sources as %).
     """
 
-    def __init__(self, history: List[HistoryRecord]) -> None:
+    def __init__(
+        self,
+        history: List[HistoryRecord],
+        exclusion_factor: float = calc.DEFAULT_EXCLUSION_FACTOR,
+        min_eval_days: int = calc.DEFAULT_MIN_EVAL_DAYS,
+        calibration_state: Optional[Dict[str, bool]] = None,
+    ) -> None:
         self._history = history  # mutated in-place by coordinator
+        # Letzte Gating-Entscheidung je Quelle (für die Hysterese); wird hier
+        # aktualisiert und vom Coordinator mit der Historie gespeichert.
+        self._calibration_state = calibration_state if calibration_state is not None else {}
+        self._exclusion_factor = exclusion_factor
+        self._min_eval_days = min_eval_days
         # Cache: {source_id: (knots_x, knots_y, fitted_month)}
         self._iso_cache: Dict[str, Tuple[List[float], List[float], int]] = {}
+        # Gewichte hängen nur von Historie, Quellen und Stichtag ab; pro Update
+        # werden sie mehrfach abgefragt, die Rückrechnung soll nur einmal laufen.
+        self._weight_cache: Optional[Tuple[tuple, Dict[str, Dict]]] = None
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public
@@ -174,7 +204,10 @@ class FusionEngine:
         current_month = target_date.month
         source_ids = [r.source_id for r in readings]
         _today = dt_util.now().date()
-        weights = self._compute_weights(source_ids, current_month)
+        details = self.compute_weights(source_ids)
+        weights = {sid: info["weight"] for sid, info in details.items()}
+        # Kalibrierung nur für Quellen, bei denen sie den Fehler senkt (siehe compute_weights)
+        use_cal = {sid: info["calibration_active"] for sid, info in details.items()}
 
         date_str = target_date.isoformat()
         slots: Dict[str, Dict[str, float]] = {}
@@ -183,7 +216,9 @@ class FusionEngine:
             raw_daily = (
                 reading.today_kwh if target_date == _today else reading.tomorrow_kwh
             )
-            calibrated_daily = self._calibrate(reading.source_id, raw_daily, current_month)
+            calibrated_daily = self._fusion_kwh(
+                reading.source_id, raw_daily, current_month, use_cal[reading.source_id]
+            )
             hourly_scale = (calibrated_daily / raw_daily) if raw_daily > 0 else 1.0
 
             hourly = (
@@ -206,7 +241,9 @@ class FusionEngine:
                 raw_kwh = (
                     reading.today_kwh if target_date == _today else reading.tomorrow_kwh
                 )
-                calibrated_kwh = self._calibrate(reading.source_id, raw_kwh, current_month)
+                calibrated_kwh = self._fusion_kwh(
+                    reading.source_id, raw_kwh, current_month, use_cal[reading.source_id]
+                )
                 target_wh = max(0.0, calibrated_kwh * 1000.0)
                 for slot, fraction in profile.items():
                     # Rewrite the date part from today to target_date
@@ -227,10 +264,11 @@ class FusionEngine:
             )
 
         target_wh = sum(
-            self._calibrate(
+            self._fusion_kwh(
                 r.source_id,
                 r.today_kwh if target_date == _today else r.tomorrow_kwh,
                 current_month,
+                use_cal[r.source_id],
             )
             * weights.get(r.source_id, 0.0)
             * 1000.0
@@ -320,9 +358,9 @@ class FusionEngine:
             rmse = math.sqrt(sum(e ** 2 for e in errors) / len(errors))
             mae = sum(abs(e) for e in errors) / len(errors)
             mean_bias = sum(errors) / len(errors)
-            # Scatter = error spread with the systematic bias removed. This is
-            # the part calibration cannot fix and is what drives both the weight
-            # (see _compute_weights) and the quality label.
+            # Scatter = error spread with the systematic bias removed. Drives the
+            # quality label; the weight comes from the calibrated RMSE instead
+            # (see compute_weights).
             std = math.sqrt(sum((e - mean_bias) ** 2 for e in errors) / len(errors))
             mean_actual = sum(r["actual_kwh"] for r in recent) / len(recent)
             rmse_pct = round(rmse / mean_actual * 100, 1) if mean_actual > 0 else None
@@ -355,6 +393,14 @@ class FusionEngine:
     # ──────────────────────────────────────────────────────────────────────────
     # Calibration
     # ──────────────────────────────────────────────────────────────────────────
+
+    def _fusion_kwh(
+        self, source_id: str, raw_kwh: float, month: int, calibrate: bool
+    ) -> float:
+        """Tageswert, der in die Fusion eingeht: kalibriert oder roh (Gating)."""
+        if calibrate:
+            return self._calibrate(source_id, raw_kwh, month)
+        return max(0.0, raw_kwh)
 
     def _calibrate(self, source_id: str, raw_kwh: float, month: int) -> float:
         """
@@ -415,42 +461,109 @@ class FusionEngine:
         factor = calc.linear_bias_factor(mean_fc, mean_ac)
         return max(0.0, raw_kwh * factor)
 
+    def _calibrate_as_of(self, source_id: str, raw_kwh: float, as_of: date) -> float:
+        """Kalibrierter Wert, wie ihn _calibrate am Morgen von ``as_of`` geliefert hätte.
+
+        Nutzt nur Historie *vor* ``as_of`` und dieselbe Rangfolge wie _calibrate
+        (isotonisch → linear → unverändert), aber ohne Cache. Ein In-Sample-Fehler
+        wäre zu optimistisch, weil die isotonische Kurve auf genau diesen Punkten
+        angepasst wurde.
+        """
+        prior = [r for r in self._history if r["date"] < as_of.isoformat()]
+
+        seasonal = _seasonal_records(prior, source_id, as_of.month)
+        if len(seasonal) >= MIN_ISO_POINTS:
+            knots_x, knots_y = calc.isotonic_fit(
+                [r["forecast_kwh"] for r in seasonal],
+                [r["actual_kwh"] for r in seasonal],
+            )
+            return max(0.0, calc.isotonic_predict(knots_x, knots_y, raw_kwh))
+
+        recent = _recent_records(prior, source_id, today=as_of)
+        if len(recent) >= MIN_HISTORY_DAYS:
+            return self._calibrate_linear(raw_kwh, recent)
+
+        return max(0.0, raw_kwh)
+
     # ──────────────────────────────────────────────────────────────────────────
     # Weights
     # ──────────────────────────────────────────────────────────────────────────
 
-    def _compute_weights(self, source_ids: List[str], month: int) -> Dict[str, float]:
+    def compute_weights(self, source_ids: List[str]) -> Dict[str, Dict]:
+        """Gewichte der aktiven Quellen samt Ausschlussinformation.
+
+        Je Quelle werden über die letzten HISTORY_WINDOW_DAYS Tage (dieselben Tage,
+        über die source_quality die Rohfehler berichtet) zwei Fehler bestimmt:
+        der des Rohwertes und der des kalibrierten Wertes (siehe
+        _calibrate_as_of). Kalibriert wird nur, wenn das den Fehler senkt
+        (calc.use_calibration, mit Hysterese gegenüber der letzten Entscheidung).
+        Das Gewicht kommt aus dem Fehler des Wertes, der tatsächlich in die
+        Fusion eingeht.
+
+        Rückgabe je Quelle: ``{"weight", "excluded", "exclusion_reason",
+        "calibration_active", "rmse_raw", "rmse_calibrated", "days_evaluated"}``.
+        Tages- und Stundenprognose nutzen dieselben Gewichte.
         """
-        Compute normalised weights from the bias-corrected error spread.
+        today = dt_util.now().date()
+        key = (
+            today,
+            tuple(source_ids),
+            tuple(
+                (r["date"], r["source"], r["forecast_kwh"], r["actual_kwh"])
+                for r in self._history
+            ),
+        )
+        if self._weight_cache is not None and self._weight_cache[0] == key:
+            return self._weight_cache[1]
 
-        Weighting uses the standard deviation of the forecast errors (i.e. RMSE
-        with the systematic mean bias removed: std = sqrt(RMSE² − bias²)) rather
-        than the raw RMSE. A source that is consistently biased but otherwise
-        stable is corrected by _calibrate before fusing, so penalising it for
-        that (removable) bias would down-weight an actually reliable source.
-        Only the irreducible scatter should drive the weight.
-
-        Sources without enough history keep their slot (spread ``None``) and are
-        filled with the mean spread of the others by calc.inverse_spread_weights,
-        rather than collapsing every source to an equal weight.
-        """
-        spread_map: Dict[str, Optional[float]] = {}
-
+        rmse_map: Dict[str, Optional[float]] = {}
+        days_map: Dict[str, int] = {}
+        raw_map: Dict[str, Optional[float]] = {}
+        cal_map: Dict[str, Optional[float]] = {}
+        active_map: Dict[str, bool] = {}
         for sid in source_ids:
-            seasonal = _seasonal_records(self._history, sid, month)
-            recent = _recent_records(self._history, sid)
-            records = seasonal if len(seasonal) >= MIN_HISTORY_DAYS else recent
+            records = _recent_records(self._history, sid, today=today)
+            raw_map[sid] = calc.rmse([r["forecast_kwh"] - r["actual_kwh"] for r in records])
+            cal_map[sid] = calc.rmse([
+                self._calibrate_as_of(sid, r["forecast_kwh"], date.fromisoformat(r["date"]))
+                - r["actual_kwh"]
+                for r in records
+            ])
+            days_map[sid] = len(records)
+            active_map[sid] = calc.use_calibration(
+                raw_map[sid], cal_map[sid], days_map[sid], self._min_eval_days,
+                previous=self._calibration_state.get(sid),
+            )
+            if days_map[sid] >= self._min_eval_days:
+                if self._calibration_state.get(sid) not in (None, active_map[sid]):
+                    _LOGGER.info(
+                        "%s: Kalibrierung %s (RMSE roh %.2f, kalibriert %.2f kWh)",
+                        SOURCE_NAMES.get(sid, sid),
+                        "aktiviert" if active_map[sid] else "deaktiviert",
+                        raw_map[sid], cal_map[sid],
+                    )
+                self._calibration_state[sid] = active_map[sid]
+            rmse_map[sid] = cal_map[sid] if active_map[sid] else raw_map[sid]
 
-            if len(records) < MIN_HISTORY_DAYS:
-                spread_map[sid] = None
-                continue
+        result = calc.inverse_variance_weights(
+            rmse_map,
+            days_map,
+            exclusion_factor=self._exclusion_factor,
+            min_days=self._min_eval_days,
+        )
+        for sid, info in result.items():
+            info["calibration_active"] = active_map[sid]
+            info["rmse_raw"] = _round_or_none(raw_map[sid])
+            info["rmse_calibrated"] = _round_or_none(cal_map[sid])
+            info["days_evaluated"] = days_map[sid]
+            if info["excluded"]:
+                _LOGGER.debug(
+                    "%s ausgeschlossen: %s",
+                    SOURCE_NAMES.get(sid, sid), info["exclusion_reason"],
+                )
 
-            errors = [r["forecast_kwh"] - r["actual_kwh"] for r in records]
-            mean_err = sum(errors) / len(errors)
-            std = math.sqrt(sum((e - mean_err) ** 2 for e in errors) / len(errors))
-            spread_map[sid] = max(std, 0.01)
-
-        return calc.inverse_spread_weights(spread_map)
+        self._weight_cache = (key, result)
+        return result
 
     # ──────────────────────────────────────────────────────────────────────────
     # Uncertainty
