@@ -69,21 +69,21 @@ def test_isotonic_empty():
 
 def test_label_biased_but_consistent_is_corrected_not_good():
     # Forecast.Solar live case: low scatter, large bias → correctable.
-    assert calc.quality_label(14.2, 41.6) == "Verzerrt (korrigiert)"
+    assert calc.quality_label(14.2, 41.6) == "skewed"
 
 
 def test_label_accurate():
-    assert calc.quality_label(13.2, 1.1) == "Genau"
+    assert calc.quality_label(13.2, 1.1) == "accurate"
 
 
 def test_label_noisy_and_bad():
-    assert calc.quality_label(17.9, 4.1) == "Unruhig"
-    assert calc.quality_label(35.0, 2.0) == "Schlecht"
+    assert calc.quality_label(17.9, 4.1) == "noisy"
+    assert calc.quality_label(35.0, 2.0) == "poor"
 
 
 def test_label_high_scatter_overrides_bias():
     # A noisy source is not "corrected" even if it also has bias.
-    assert calc.quality_label(40.0, 50.0) == "Schlecht"
+    assert calc.quality_label(40.0, 50.0) == "poor"
 
 
 def test_label_none_scatter():

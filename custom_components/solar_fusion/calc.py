@@ -10,9 +10,9 @@ import math
 from typing import Dict, List, Optional, Tuple
 
 # Quality-label thresholds (percent of mean actual production)
-SCATTER_BAD_PCT = 30.0      # irreducible scatter at/above this → "Schlecht"
-SCATTER_NOISY_PCT = 15.0    # scatter in [NOISY, BAD) → "Unruhig"
-BIAS_SKEWED_PCT = 15.0      # |bias| at/above this (with low scatter) → "Verzerrt"
+SCATTER_BAD_PCT = 30.0      # irreducible scatter at/above this → "poor"
+SCATTER_NOISY_PCT = 15.0    # scatter in [NOISY, BAD) → "noisy"
+BIAS_SKEWED_PCT = 15.0      # |bias| at/above this (with low scatter) → "skewed"
 
 # Linear bias-correction clamp (multiplicative factor bounds)
 MIN_BIAS_FACTOR = 0.5
@@ -108,21 +108,23 @@ def quality_label(scatter_pct: Optional[float], bias_pct: Optional[float]) -> Op
     """Categorical source-quality label that separates bias from scatter.
 
     A source with a large but *consistent* offset (high bias, low scatter) is
-    fully correctable by calibration, so it is labelled "Verzerrt (korrigiert)"
-    rather than hidden behind a green "good" – while a source whose error is
-    irreducible scatter is labelled "Unruhig"/"Schlecht". This keeps the label
+    fully correctable by calibration, so it is labelled "skewed" (corrected)
+    rather than hidden behind a green "accurate" – while a source whose error
+    is irreducible scatter is labelled "noisy"/"poor". This keeps the label
     coherent with the weighting (which is driven by scatter, not raw RMSE) yet
     still surfaces a large raw deviation instead of masking it.
+
+    Returns a language-neutral key; display text lives in translations/.
     """
     if scatter_pct is None:
         return None
     if scatter_pct >= SCATTER_BAD_PCT:
-        return "Schlecht"
+        return "poor"
     if scatter_pct >= SCATTER_NOISY_PCT:
-        return "Unruhig"
+        return "noisy"
     if (bias_pct or 0.0) >= BIAS_SKEWED_PCT:
-        return "Verzerrt (korrigiert)"
-    return "Genau"
+        return "skewed"
+    return "accurate"
 
 
 def rmse(errors: List[float]) -> Optional[float]:
