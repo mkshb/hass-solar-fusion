@@ -442,6 +442,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
 
 class SourceQualitySensor(CoordinatorEntity, SensorEntity):
     _attr_icon = "mdi:check-decagram-outline"
+    _attr_translation_key = "source_quality"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_state_class = SensorStateClass.MEASUREMENT
 
