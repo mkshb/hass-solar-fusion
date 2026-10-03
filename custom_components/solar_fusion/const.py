@@ -10,6 +10,8 @@ CONF_PV_ENTITY = "pv_entity"        # entity_id of actual PV production sensor (
 CONF_PV_ENTITIES = "pv_entities"    # list[str] – multiple PV sensors to sum
 CONF_UPDATE_INTERVAL = "update_interval"  # minutes
 CONF_INSTANCE_NAME = "instance_name"      # user-defined name for this entry (e.g. "Dach")
+CONF_EXCLUSION_FACTOR = "exclusion_factor"  # k: Ausschluss ab k × RMSE der besten Quelle
+CONF_MIN_EVAL_DAYS = "min_eval_days"        # Mindestzahl ausgewerteter Tage für die Gewichtung
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Source identifiers  (one per supported upstream HA integration)

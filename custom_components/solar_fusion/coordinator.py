@@ -12,7 +12,10 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
 
+from . import calc
 from .const import (
+    CONF_EXCLUSION_FACTOR,
+    CONF_MIN_EVAL_DAYS,
     CONF_PV_ENTITY,
     CONF_PV_ENTITIES,
     CONF_SOURCES,
@@ -58,6 +61,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # {date_iso: {source_id: forecast_kwh}}  – persisted in storage
         self._morning_snapshots: Dict[str, Dict[str, float]] = {}
+        # {source_id: bool} – letzte Kalibrierungs-Entscheidung (Hysterese) – persisted
+        self._calibration_state: Dict[str, bool] = {}
 
         super().__init__(
             hass,
@@ -75,13 +80,24 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             if "history" in stored:
                 self._history = stored["history"]
                 _LOGGER.debug("Loaded %d history records", len(self._history))
+            if "calibration_state" in stored:
+                self._calibration_state = stored["calibration_state"]
             if "morning_snapshots" in stored:
                 self._morning_snapshots = stored["morning_snapshots"]
                 _LOGGER.debug(
                     "Loaded morning snapshots for %d days",
                     len(self._morning_snapshots),
                 )
-        self._fusion = FusionEngine(self._history)
+        self._fusion = FusionEngine(
+            self._history,
+            exclusion_factor=float(
+                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+            ),
+            min_eval_days=int(
+                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+            ),
+            calibration_state=self._calibration_state,
+        )
 
         # Reconcile history against the recorder (fixes legacy carryover corruption)
         if self._history:
@@ -173,6 +189,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         await self._store.async_save({
             "history": self._history,
             "morning_snapshots": self._morning_snapshots,
+            "calibration_state": self._calibration_state,
         })
 
         return {
@@ -182,6 +199,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "fused_tomorrow_kwh": round(sum(fused_tomorrow.values()) / 1000, 3),
             "uncertainty_pct": uncertainty_pct,
             "weights": weights,
+            # Je Quelle: weight, excluded, exclusion_reason, rmse_calibrated, days_evaluated
+            "weight_details": self._fusion.compute_weights([r.source_id for r in readings]),
             "source_quality": self._fusion.source_quality(),
             "raw_readings": {
                 r.source_id: {
@@ -374,6 +393,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             await self._store.async_save({
                 "history": self._history,
                 "morning_snapshots": self._morning_snapshots,
+                "calibration_state": self._calibration_state,
             })
             if self._fusion:
                 self._fusion._iso_cache.clear()

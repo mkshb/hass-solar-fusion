@@ -35,6 +35,7 @@ async def async_get_config_entry_diagnostics(
             "active_sources": data.get("active_sources", []),
             "missing_sources": data.get("missing_sources", []),
             "weights": data.get("weights", {}),
+            "weight_details": data.get("weight_details", {}),
             "fused_today_kwh": data.get("fused_today_kwh"),
             "fused_tomorrow_kwh": data.get("fused_tomorrow_kwh"),
             "uncertainty_pct": data.get("uncertainty_pct"),
