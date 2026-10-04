@@ -15,13 +15,19 @@ from homeassistant.util import dt as dt_util
 from . import calc
 from .const import (
     CONF_EXCLUSION_FACTOR,
+    CONF_HORIZON_SOURCES,
     CONF_MIN_EVAL_DAYS,
     CONF_PV_ENTITY,
     CONF_PV_ENTITIES,
+    CONF_SHADING_APPLY,
+    CONF_SHADING_LEARN,
     CONF_SOURCES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_SHADING_APPLY,
+    DEFAULT_SHADING_LEARN,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
+    SHADING_RETENTION_DAYS,
     SOURCE_NAMES,
     STORAGE_KEY,
     STORAGE_VERSION,
@@ -64,9 +70,17 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._history: List[Dict] = []
         self._fusion: Optional[FusionEngine] = None
 
-        # {date_iso: {"daily": {source_id: kWh}, "hourly": {source_id: {"HH": Wh}}}}
-        # – persisted in storage
+        # {date_iso: {"daily": {source_id: kWh}, "daily_corrected": {source_id: kWh},
+        #             "hourly": {source_id: {"HH": Wh}}}}  – persisted in storage
         self._morning_snapshots: Dict[str, Dict[str, Dict]] = {}
+        # Verschattung – persisted:
+        #   days:  {date_iso: {"actual": {"HH": Wh}, "forecast": {source_id: {"HH": Wh}},
+        #                      "origin": "snapshot" | "recorder"}}
+        #   cells: Karte (calc.learn_shading_map), used_days, last_run
+        self._shading: Dict[str, Any] = {"days": {}, "cells": {}, "used_days": 0, "last_run": None}
+        # {date_iso: letzter Versuch} – Tage ohne Stunden-Istwerte (Statistik
+        # wird erst nach Stundenende geschrieben); erneuter Versuch nach einer Stunde
+        self._shading_attempted: Dict[str, datetime] = {}
         # {source_id: bool} – letzte Kalibrierungs-Entscheidung (Hysterese) – persisted
         self._calibration_state: Dict[str, bool] = {}
 
@@ -94,6 +108,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                     "Loaded morning snapshots for %d days",
                     len(self._morning_snapshots),
                 )
+            if "shading" in stored:
+                self._shading.update(stored["shading"])
         self._fusion = FusionEngine(
             self._history,
             exclusion_factor=float(
@@ -103,7 +119,14 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
             ),
             calibration_state=self._calibration_state,
+            shading_cells=self._shading.get("cells") or {},
+            shading_apply=self._shading_apply,
+            horizon_sources=self._config.get(CONF_HORIZON_SOURCES, []),
+            location=(self.hass.config.latitude, self.hass.config.longitude),
         )
+        # Karte mit den aktuellen Einstellungen (z. B. Horizont-Quellen) neu lernen
+        if self._shading["days"]:
+            await self._async_relearn_shading()
 
         # Reconcile history against the recorder (fixes legacy carryover corruption)
         if self._history:
@@ -178,6 +201,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # ── 3. Record yesterday's actuals if not yet done ──────────────────
         await self._async_maybe_record_yesterday(readings)
+        if self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN):
+            await self._async_maybe_learn_shading()
 
         # ── 4. Fuse forecasts ──────────────────────────────────────────────
         today = dt_util.now().date()
@@ -215,6 +240,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "missing_sources": missing,
             "last_updated": dt_util.now().isoformat(),
             "morning_snapshot": self.morning_snapshots.get(dt_util.now().date().isoformat(), {}),
+            "shading_ratios": {
+                d: dict(r) for d, r in self._fusion.last_shading_ratios.items()
+                if d in (today.isoformat(), tomorrow.isoformat())
+            },
         }
 
     async def _async_save(self) -> None:
@@ -222,7 +251,12 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "history": self._history,
             "morning_snapshots": self._morning_snapshots,
             "calibration_state": self._calibration_state,
+            "shading": self._shading,
         })
+
+    @property
+    def _shading_apply(self) -> bool:
+        return bool(self._config.get(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Morning snapshot
@@ -232,11 +266,13 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         """Store today's 06:00 forecast as reference for RMSE calculation.
 
         Neben den Tagessummen werden die Stundenwerte je Quelle gespeichert
-        (für das Verschattungslernen).
+        (für das Verschattungslernen) und – wenn die Verschattung angewendet
+        wird – die korrigierten Tagessummen (für Kalibrierung und Gewichtung).
         """
-        today_str = dt_util.now().date().isoformat()
+        today = dt_util.now().date()
+        today_str = today.isoformat()
         daily = {r.source_id: r.today_kwh for r in readings}
-        self._morning_snapshots[today_str] = {
+        snapshot: Dict[str, Dict] = {
             "daily": daily,
             "hourly": {
                 r.source_id: _hourly_by_hour(r.hourly_today, today_str)
@@ -244,6 +280,12 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 if r.hourly_today
             },
         }
+        if self._shading_apply:
+            ratios = self._fusion.shading_ratios(readings, today)
+            snapshot["daily_corrected"] = {
+                sid: round(kwh * ratios.get(sid, 1.0), 3) for sid, kwh in daily.items()
+            }
+        self._morning_snapshots[today_str] = snapshot
         _LOGGER.info(
             "Morning snapshot taken for %s: %s",
             today_str,
@@ -330,7 +372,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             for sid, kwh in morning.get("daily", {}).items()
         ]
 
-        self._fusion.record_actual(yesterday, actual_kwh, reference_readings)
+        self._fusion.record_actual(
+            yesterday, actual_kwh, reference_readings,
+            corrected=morning.get("daily_corrected"),
+        )
         _LOGGER.info("Recorded actual %.3f kWh for %s", actual_kwh, date_str)
 
     async def async_take_snapshot_now(self) -> None:
@@ -435,8 +480,22 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
     @property
     def morning_snapshots_full(self) -> Dict[str, Dict[str, Dict]]:
-        """Morgen-Snapshots inklusive Stundenwerten."""
+        """Morgen-Snapshots inklusive Stundenwerten und korrigierten Summen."""
         return self._morning_snapshots
+
+    @property
+    def shading(self) -> Dict[str, Any]:
+        """Verschattungsdaten (Tage, Karte, Lernstand)."""
+        return self._shading
+
+    @property
+    def shading_settings(self) -> Dict[str, Any]:
+        return {
+            "learn": bool(self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN)),
+            "apply": self._shading_apply,
+            "horizon_sources": list(self._config.get(CONF_HORIZON_SOURCES, [])),
+            "active": bool(self._fusion and self._fusion.shading_active),
+        }
 
     async def _async_reconcile_history_on_startup(self) -> None:
         """Reconcile every history record against the recorder on startup.
@@ -529,6 +588,147 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not read recorder history for %s: %s", entity_id, err)
             return None
+    # ──────────────────────────────────────────────────────────────────────────
+    # Verschattung lernen
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def _pv_entities(self) -> List[str]:
+        pv_entities: List[str] = self._config.get(CONF_PV_ENTITIES) or []
+        if not pv_entities and self._config.get(CONF_PV_ENTITY):
+            pv_entities = [self._config[CONF_PV_ENTITY]]
+        return pv_entities
+
+    async def _async_read_hourly_actual(self, target_date: date) -> Optional[Dict[str, float]]:
+        """Stündlicher Ist-Ertrag eines Tages aus der Recorder-Langzeitstatistik.
+
+        {"HH": Wh}, HH = lokale Stunde des Periodenbeginns. Gleiche Reihenfolge
+        wie bei den Tageswerten: zuerst der eigene Tageszähler, sonst die
+        Summe der PV-Sensoren. Energiezähler liefern ``change`` (kWh),
+        Leistungssensoren ``mean`` (W ≙ Wh je Stunde).
+        """
+        daily_meter = self._find_daily_meter_entity()
+        if daily_meter:
+            result = await self._async_hourly_statistics([daily_meter], target_date)
+            if result:
+                return result
+        pv_entities = self._pv_entities()
+        if not pv_entities:
+            return None
+        return await self._async_hourly_statistics(pv_entities, target_date)
+
+    async def _async_hourly_statistics(
+        self, entity_ids: List[str], target_date: date
+    ) -> Optional[Dict[str, float]]:
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+
+            start = dt_util.start_of_local_day(
+                datetime(target_date.year, target_date.month, target_date.day)
+            )
+            end = dt_util.start_of_local_day(
+                datetime(target_date.year, target_date.month, target_date.day)
+                + timedelta(days=1)
+            )
+            stats = await get_instance(self.hass).async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                end,
+                set(entity_ids),
+                "hour",
+                {"energy": "kWh", "power": "W"},
+                {"change", "mean"},
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.warning("Could not read hourly statistics for %s: %s", entity_ids, err)
+            return None
+
+        total: Dict[str, float] = {}
+        found = False
+        for entity_id in entity_ids:
+            for row in stats.get(entity_id, []):
+                begin = row.get("start")
+                if isinstance(begin, (int, float)):
+                    begin = dt_util.utc_from_timestamp(begin)
+                if begin is None:
+                    continue
+                local = dt_util.as_local(begin)
+                if local.date() != target_date:
+                    continue
+                if row.get("change") is not None:
+                    wh = max(0.0, float(row["change"])) * 1000.0
+                elif row.get("mean") is not None:
+                    wh = max(0.0, float(row["mean"]))
+                else:
+                    continue
+                key = f"{local.hour:02d}"
+                total[key] = total.get(key, 0.0) + wh
+                found = True
+        if not found:
+            return None
+        return {k: round(v, 1) for k, v in sorted(total.items())}
+
+    async def _async_maybe_learn_shading(self) -> None:
+        """Abgeschlossene Tage mit Stunden-Snapshot ins Verschattungslernen übernehmen."""
+        now = dt_util.now()
+        today_str = now.date().isoformat()
+        retry_before = now - timedelta(hours=1)
+        pending = [
+            d for d, snap in sorted(self._morning_snapshots.items())
+            if d < today_str
+            and snap.get("hourly")
+            and d not in self._shading["days"]
+            and self._shading_attempted.get(d, retry_before) <= retry_before
+        ]
+        if not pending:
+            return
+        added = 0
+        for d in pending:
+            actual = await self._async_read_hourly_actual(date.fromisoformat(d))
+            if not actual:
+                self._shading_attempted[d] = now
+                _LOGGER.debug("Shading: no hourly actuals for %s yet", d)
+                continue
+            self._shading["days"][d] = {
+                "actual": actual,
+                "forecast": self._morning_snapshots[d]["hourly"],
+                "origin": "snapshot",
+            }
+            added += 1
+        if added:
+            await self._async_relearn_shading()
+
+    async def _async_relearn_shading(self) -> None:
+        """Karte aus allen gespeicherten Tagen neu lernen und an die Fusion geben."""
+        cutoff = (dt_util.now().date() - timedelta(days=SHADING_RETENTION_DAYS)).isoformat()
+        self._shading["days"] = {
+            d: v for d, v in self._shading["days"].items() if d >= cutoff
+        }
+        days = await self.hass.async_add_executor_job(
+            _shading_learning_input,
+            self._shading["days"],
+            self.hass.config.latitude,
+            self.hass.config.longitude,
+            dt_util.get_default_time_zone(),
+        )
+        cells, used = calc.learn_shading_map(
+            days, excluded_sources=self._config.get(CONF_HORIZON_SOURCES, [])
+        )
+        self._shading["cells"] = cells
+        self._shading["used_days"] = used
+        self._shading["last_run"] = dt_util.now().isoformat()
+        if self._fusion:
+            self._fusion.set_shading_cells(cells)
+        _LOGGER.info(
+            "Shading map learned from %d of %d days: %d cells learned, %d below 0.9",
+            used,
+            len(days),
+            sum(1 for c in cells.values() if c.get("learned")),
+            sum(1 for c in cells.values() if c.get("learned") and c["factor"] < 0.9),
+        )
 
 
 def _hourly_by_hour(hourly: Dict[str, float], date_str: str) -> Dict[str, float]:
@@ -538,3 +738,29 @@ def _hourly_by_hour(hourly: Dict[str, float], date_str: str) -> Dict[str, float]
         for slot, wh in hourly.items()
         if slot.startswith(date_str)
     }
+
+
+def _shading_learning_input(days: Dict[str, Dict], lat: float, lon: float, tz) -> List[List[Dict]]:
+    """Gespeicherte Tage → Eingabe für calc.learn_shading_map (Sonnenstand zur Slotmitte)."""
+    out: List[List[Dict]] = []
+    for d, day in sorted(days.items()):
+        actual = day.get("actual", {})
+        forecast = day.get("forecast", {})
+        hours_keys = sorted({h for fc in forecast.values() for h in fc})
+        hours: List[Dict] = []
+        for hh in hours_keys:
+            if hh not in actual:
+                continue
+            start = datetime.fromisoformat(f"{d}T{hh}:00").replace(tzinfo=tz)
+            (az, el), = calc.slot_sun_positions(start, lat, lon)
+            if el <= 0:
+                continue
+            hours.append({
+                "az": az,
+                "el": el,
+                "actual": actual[hh],
+                "forecast": {sid: fc[hh] for sid, fc in forecast.items() if hh in fc},
+            })
+        if hours:
+            out.append(hours)
+    return out

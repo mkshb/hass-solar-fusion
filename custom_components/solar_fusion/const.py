@@ -12,6 +12,9 @@ CONF_UPDATE_INTERVAL = "update_interval"  # minutes
 CONF_INSTANCE_NAME = "instance_name"      # user-defined name for this entry (e.g. "Dach")
 CONF_EXCLUSION_FACTOR = "exclusion_factor"  # k: Ausschluss ab k × RMSE der besten Quelle
 CONF_MIN_EVAL_DAYS = "min_eval_days"        # Mindestzahl ausgewerteter Tage für die Gewichtung
+CONF_SHADING_LEARN = "shading_learn"        # Verschattung aus Stunden-Ist lernen
+CONF_SHADING_APPLY = "shading_apply"        # gelernte Verschattung auf die Prognose anwenden
+CONF_HORIZON_SOURCES = "horizon_sources"    # list[str] – Quellen, die schon einen Horizont enthalten
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Source identifiers  (one per supported upstream HA integration)
@@ -67,7 +70,6 @@ OPEN_METEO_TOMORROW = "sensor.energy_production_tomorrow"
 OPEN_METEO_ATTR_HOURLY = "wh_period"
 OPEN_METEO_ATTR_HOURLY_LEGACY = "wh_hours"
 
-
 # Solcast PV Forecast (HACS, domain: solcast_solar)
 # Sensors: sensor.solcast_pv_forecast_forecast_today / _forecast_tomorrow
 # Hourly attribute: "detailedHourly" list of {period_start, pv_estimate (kWh)}
@@ -86,6 +88,12 @@ SOLCAST_ATTR_PERIOD_START = "period_start"
 # statt {source: kWh}; dazu Stundendaten und Karte für die Verschattung.
 STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}_history"
+
+DEFAULT_SHADING_LEARN = False
+DEFAULT_SHADING_APPLY = True
+# Wie lange Stunden-Ist und Stundenprognose je Tag für das Lernen aufbewahrt
+# werden. Etwas mehr als ein Jahr, damit jeder Sonnenstand einmal vorkommt.
+SHADING_RETENTION_DAYS = 400
 
 DEFAULT_UPDATE_INTERVAL = 60          # minutes
 
