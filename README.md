@@ -532,6 +532,22 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 
 ---
 
+## Development & tests
+
+Two test suites, both run in CI (`.github/workflows/tests.yaml`):
+
+- **`tests/`** – unit tests without Home Assistant (calculation, shading, fusion with a stub for `homeassistant.util.dt`, storage migration). Run each file as a script (`python3 tests/test_calc.py`) or all with `pytest`.
+- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
+
+  ```bash
+  pip install -r requirements_test.txt
+  pytest tests_ha
+  ```
+
+Run the two suites separately: the unit tests replace `homeassistant` modules with stubs.
+
+---
+
 ## License
 
 MIT
