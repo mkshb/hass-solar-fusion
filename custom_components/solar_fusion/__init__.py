@@ -9,9 +9,11 @@ import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
+from homeassistant.util import slugify
 
-from .const import DOMAIN
+from .const import CONF_INSTANCE_NAME, DOMAIN, device_name
 from .coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -103,6 +105,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Solar Fusion from a config entry."""
+    _async_fix_doubled_entity_ids(hass, entry)
     coordinator = SolarForecastCoordinator(hass, entry)
     await coordinator.async_setup()
     await coordinator.async_config_entry_first_refresh()
@@ -112,6 +115,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
+
+
+def _async_fix_doubled_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Entity-IDs mit doppeltem Gerätepräfix umbenennen.
+
+    Bis 0.3.0 enthielten die Entitätsnamen das Gerätepräfix selbst
+    ("Solar Fusion Home – …"); HA 2026.10 setzt den Gerätenamen zusätzlich
+    davor. Neu angelegte Entitäten bekamen so IDs wie
+    ``sensor.solar_fusion_home_solar_fusion_home_diagnostics_shading``.
+    Umbenannt wird nur, wenn die Ziel-ID frei ist; Statistik und Historie
+    zieht der Recorder mit.
+    """
+    slug = slugify(device_name(entry.data.get(CONF_INSTANCE_NAME, "")))
+    doubled = f"sensor.{slug}_{slug}_"
+    registry = er.async_get(hass)
+    for reg_entry in er.async_entries_for_config_entry(registry, entry.entry_id):
+        if not reg_entry.entity_id.startswith(doubled):
+            continue
+        new_id = f"sensor.{slug}_" + reg_entry.entity_id[len(doubled):]
+        if registry.async_get(new_id) is not None or hass.states.get(new_id) is not None:
+            _LOGGER.warning(
+                "Cannot rename %s to %s: target already exists", reg_entry.entity_id, new_id
+            )
+            continue
+        _LOGGER.info("Renaming %s to %s", reg_entry.entity_id, new_id)
+        registry.async_update_entity(reg_entry.entity_id, new_entity_id=new_id)
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

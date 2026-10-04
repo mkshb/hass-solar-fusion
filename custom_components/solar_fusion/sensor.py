@@ -32,19 +32,18 @@ from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import calc
-from .const import ALL_SOURCES, CONF_INSTANCE_NAME, CONF_PV_ENTITY, CONF_PV_ENTITIES, DOMAIN, SOURCE_NAMES
+from .const import (
+    CONF_INSTANCE_NAME,
+    CONF_PV_ENTITIES,
+    CONF_PV_ENTITY,
+    DOMAIN,
+    SOURCE_NAMES,
+    device_name,
+)
 from .coordinator import SolarForecastCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
-
-
-def _entity_name(entry: ConfigEntry, suffix: str) -> str:
-    """Return a fixed English entity name prefixed with the instance name."""
-    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
-    if instance:
-        return f"Solar Fusion {instance} – {suffix}"
-    return f"Solar Fusion – {suffix}"
 
 
 async def async_setup_entry(
@@ -82,6 +81,7 @@ async def async_setup_entry(
 # ──────────────────────────────────────────────────────────────────────────────
 
 class PVDailyMeterSensor(RestoreEntity, SensorEntity):
+    _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -92,7 +92,7 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._entry = entry
         self._source_entity_ids = source_entity_ids
         self._attr_unique_id = f"{entry.entry_id}_pv_daily_meter"
-        self._attr_name = _entity_name(entry, "Diagnostics – PV Daily Production")
+        self._attr_name = "Diagnostics – PV Daily Production"
         self._attr_device_info = _device(entry)
         self._value: Optional[float] = None
         self._source_state: Dict[str, Dict] = {
@@ -262,11 +262,9 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _device(entry: ConfigEntry) -> DeviceInfo:
-    instance = entry.data.get(CONF_INSTANCE_NAME, "").strip()
-    device_name = f"Solar Fusion \u2013 {instance}" if instance else "Solar Fusion"
     return DeviceInfo(
         identifiers={(DOMAIN, entry.entry_id)},
-        name=device_name,
+        name=device_name(entry.data.get(CONF_INSTANCE_NAME, "")),
         manufacturer="Solar Fusion",
         model="Adaptive Ensemble Forecaster",
         sw_version=_MANIFEST_VERSION,
@@ -278,7 +276,9 @@ def _device(entry: ConfigEntry) -> DeviceInfo:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FusedForecastSensor(CoordinatorEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.ENERGY
+    _attr_has_entity_name = True
+    # Keine Device-Class „energy“: Sie verlangt state_class total/total_increasing,
+    # eine Prognose ist aber kein Zähler. measurement behält die Langzeitstatistik.
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_icon = "mdi:solar-power"
@@ -288,7 +288,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
         self._day = day
         self._entry = entry
         self._attr_unique_id = f"{entry.entry_id}_fused_{day}"
-        self._attr_name = _entity_name(entry, f"Forecast – {day.capitalize()}")
+        self._attr_name = f"Forecast – {day.capitalize()}"
         self._attr_device_info = _device(entry)
 
     @property
@@ -363,6 +363,7 @@ _HOURLY_SENSOR_META = {
 class FusedHourlySensor(CoordinatorEntity, SensorEntity):
     """Fused forecast for a specific hour offset (0 = current, 1 = next, 2 = in 2 h)."""
 
+    _attr_has_entity_name = True
     _attr_icon = "mdi:chart-bell-curve-cumulative"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -372,7 +373,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
         self._hour_offset = hour_offset
         uid_suffix, display = _HOURLY_SENSOR_META[hour_offset]
         self._attr_unique_id = f"{entry.entry_id}_{uid_suffix}"
-        self._attr_name = _entity_name(entry, display)
+        self._attr_name = display
         self._attr_device_info = _device(entry)
 
     def _forecast_slot(self) -> tuple[str, Optional[float]]:
@@ -417,6 +418,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
     _attr_native_unit_of_measurement = "%"
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_icon = "mdi:chart-areaspline-variant"
@@ -424,7 +426,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_uncertainty"
-        self._attr_name = _entity_name(entry, "Forecast – Uncertainty")
+        self._attr_name = "Forecast – Uncertainty"
         self._attr_device_info = _device(entry)
 
     @property
@@ -452,6 +454,7 @@ class ForecastUncertaintySensor(CoordinatorEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class SourceQualitySensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
     _attr_icon = "mdi:check-decagram-outline"
     _attr_translation_key = "source_quality"
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
@@ -462,7 +465,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
         self._source_id = source_id
         display = SOURCE_NAMES.get(source_id, source_id)
         self._attr_unique_id = f"{entry.entry_id}_quality_{source_id}"
-        self._attr_name = _entity_name(entry, f"Quality – {display}")
+        self._attr_name = f"Quality – {display}"
         self._attr_device_info = _device(entry)
 
     @property
@@ -506,13 +509,14 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 
 class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
+    _attr_has_entity_name = True
     _attr_icon = "mdi:weather-sunset-up"
     _attr_native_unit_of_measurement = None
 
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_morning_snapshot"
-        self._attr_name = _entity_name(entry, "Diagnostics – Morning Snapshot")
+        self._attr_name = "Diagnostics – Morning Snapshot"
         self._attr_device_info = _device(entry)
 
     @property
@@ -550,6 +554,7 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 class ShadingSensor(CoordinatorEntity, SensorEntity):
     """Gelernte Verschattung: Zustand = Zahl gelernter Zellen (Azimut × Höhe)."""
 
+    _attr_has_entity_name = True
     _attr_icon = "mdi:weather-partly-cloudy"
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
@@ -557,7 +562,7 @@ class ShadingSensor(CoordinatorEntity, SensorEntity):
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
         super().__init__(coordinator)
         self._attr_unique_id = f"{entry.entry_id}_shading"
-        self._attr_name = _entity_name(entry, "Diagnostics – Shading")
+        self._attr_name = "Diagnostics – Shading"
         self._attr_device_info = _device(entry)
 
     @property
