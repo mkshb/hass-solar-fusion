@@ -53,13 +53,19 @@ def _install() -> None:
     })
 
 
-def load_fusion(pkg_dir: str, name: str = "sf_pkg"):
-    """Import ``fusion`` from ``pkg_dir`` as part of a synthetic package ``name``.
+def load_module(pkg_dir: str, module: str, name: str = "sf_pkg"):
+    """Import ``module`` from ``pkg_dir`` as part of a synthetic package ``name``.
 
     The package ``__init__`` (which needs the full Home Assistant) is not run.
     """
     _install()
-    pkg = types.ModuleType(name)
-    pkg.__path__ = [os.path.abspath(pkg_dir)]
-    sys.modules[name] = pkg
-    return importlib.import_module(f"{name}.fusion")
+    if name not in sys.modules:
+        pkg = types.ModuleType(name)
+        pkg.__path__ = [os.path.abspath(pkg_dir)]
+        sys.modules[name] = pkg
+    return importlib.import_module(f"{name}.{module}")
+
+
+def load_fusion(pkg_dir: str, name: str = "sf_pkg"):
+    """Import ``fusion`` from ``pkg_dir`` (see load_module)."""
+    return load_module(pkg_dir, "fusion", name)
