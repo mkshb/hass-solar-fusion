@@ -1,7 +1,7 @@
 {
   "domain": "solar_fusion",
   "name": "Solar Fusion",
-  "after_dependencies": ["forecast_solar"],
+  "after_dependencies": ["forecast_solar", "open_meteo_solar_forecast", "solcast_solar"],
   "codeowners": ["@mkshb"],
   "config_flow": true,
   "dependencies": ["recorder"],
