@@ -16,6 +16,12 @@ CONF_SHADING_LEARN = "shading_learn"        # Verschattung aus Stunden-Ist lerne
 CONF_SHADING_APPLY = "shading_apply"        # gelernte Verschattung auf die Prognose anwenden
 CONF_HORIZON_SOURCES = "horizon_sources"    # list[str] – Quellen, die schon einen Horizont enthalten
 
+def device_name(instance_name: str) -> str:
+    """Name des Geräts einer Instanz; Entitätsnamen hängen ihn voran (has_entity_name)."""
+    instance = (instance_name or "").strip()
+    return f"Solar Fusion \u2013 {instance}" if instance else "Solar Fusion"
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Source identifiers  (one per supported upstream HA integration)
 # ──────────────────────────────────────────────────────────────────────────────
