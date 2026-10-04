@@ -130,6 +130,16 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             except (ValueError, TypeError):
                 pass
 
+        # Gespeicherter Zustand vom Vortag (Neustart nach Mitternacht, bevor sich
+        # eine Quelle geändert hat): Tagesbeginn verwerfen und unten aus den
+        # aktuellen Quellwerten neu setzen. Sonst stünde bis zur ersten Änderung
+        # der Quelle – nachts also stundenlang – der Vortagesertrag hier.
+        if self._today != dt_util.now().date():
+            self._today = dt_util.now().date()
+            self._value = None
+            for src in self._source_state.values():
+                src["start"] = None
+
         self.async_on_remove(
             async_track_state_change_event(
                 self.hass, self._source_entity_ids, self._handle_source_change

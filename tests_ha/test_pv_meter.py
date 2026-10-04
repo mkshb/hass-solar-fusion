@@ -101,3 +101,15 @@ async def test_restart_restores_day_start(berlin):
     await _set(hass, PV, 1013.0, INCREASING)
     assert _meter(hass) == pytest.approx(13.0)
 
+
+
+async def test_restart_after_midnight_with_state_from_yesterday(berlin, freezer):
+    hass = berlin
+    freezer.move_to(at("2026-10-04", 2, 0))
+    mock_restore_cache(hass, [State(METER, "25.0", {
+        "date": "2026-10-03", "day_start_sensor_pv_energy": 975.0,
+    })])
+    await _setup(hass, [PV], {PV: (1000.0, INCREASING)})
+    state = hass.states.get(METER)
+    assert float(state.state) == 0.0
+    assert state.attributes["date"] == "2026-10-04"
