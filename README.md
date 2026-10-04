@@ -194,7 +194,7 @@ The `forecast` attribute contains both days in a single dict, keyed by ISO hour 
 
 ### Forecast – Uncertainty
 
-State: weighted standard deviation of sources as % of the fused hourly mean.
+State: weighted standard deviation of the sources' raw daily forecasts as % of the fused daily total, averaged over today and tomorrow. `unknown` with only one source (no cross-validation).
 
 | Range | Interpretation |
 |-------|---------------|
@@ -251,7 +251,7 @@ quality_label: "Fair"
 | Mode | Condition |
 |------|-----------|
 | `isotonic (N seasonal pts)` | ≥ 20 seasonal records — full non-linear seasonal calibration |
-| `linear_bias (N recent pts)` | ≥ 3 recent records — multiplicative correction capped at ±40 % |
+| `linear_bias (N recent pts)` | ≥ 3 recent records — multiplicative correction, factor limited to 0.5–2.0 |
 | `none (insufficient data)` | < 3 records — no correction yet, more history needed |
 
 ---
@@ -433,7 +433,7 @@ Every update interval:
        using the pool-adjacent-violators algorithm. No external dependencies.
        Seasonal window: months within ±1 of the current month, all years.
   2b. Linear bias correction — if ≥ 3 recent data points
-       factor = mean(actual) / mean(forecast), capped at ±40 %
+       factor = mean(actual) / mean(forecast), limited to 0.5–2.0
   2c. No correction — insufficient history
 
   Calibration gating per source:
@@ -468,8 +468,9 @@ Every update interval:
      without undoing the hourly shading)
 
   Uncertainty:
-  6. Weighted standard deviation of source values per slot,
-     expressed as % of the fused hourly mean
+  6. Weighted standard deviation of the sources' raw daily totals,
+     expressed as % of the fused daily total (average of today and
+     tomorrow; none with a single source)
 
   Nightly (after midnight, on first update of the new day):
   7. Read yesterday's actual production from HA recorder
@@ -526,7 +527,7 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 
 ## Requirements
 
-- Home Assistant 2023.6 or newer
+- Home Assistant 2024.6 or newer
 - The `recorder` integration (enabled by default in HA)
 - At least one supported solar forecast integration installed and providing data
 
