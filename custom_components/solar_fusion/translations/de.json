@@ -99,6 +99,20 @@
           "description": "Wie viele vergangene Tage rekonstruiert werden."
         }
       }
+    },
+    "repair_history": {
+      "name": "Historie reparieren",
+      "description": "Liest den tatsächlichen PV-Ertrag erneut aus dem Home-Assistant-Recorder und korrigiert die gespeicherten Ist-Werte der Historie (z. B. nach dem Übertrag-Fehler des Tageszählers). Läuft beim Start automatisch; manuell für einen bestimmten Zeitraum aufrufen.",
+      "fields": {
+        "date_from": {
+          "name": "Von Datum",
+          "description": "Erster zu reparierender Tag. Standard: ältester Eintrag der Historie."
+        },
+        "date_to": {
+          "name": "Bis Datum",
+          "description": "Letzter zu reparierender Tag. Standard: neuester Eintrag der Historie."
+        }
+      }
     }
   },
   "entity": {
