@@ -82,7 +82,9 @@ SOLCAST_ATTR_PERIOD_START = "period_start"
 # ──────────────────────────────────────────────────────────────────────────────
 # Storage / fusion parameters
 # ──────────────────────────────────────────────────────────────────────────────
-STORAGE_VERSION = 1
+# Version 2: Morgen-Snapshot je Tag als {"daily", "daily_corrected", "hourly"}
+# statt {source: kWh}; dazu Stundendaten und Karte für die Verschattung.
+STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}_history"
 
 DEFAULT_UPDATE_INTERVAL = 60          # minutes

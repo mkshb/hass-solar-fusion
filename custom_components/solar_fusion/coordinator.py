@@ -26,14 +26,19 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
 )
-from . import calc
 from .fusion import FusionEngine
+from .migration import migrate_storage
 from .source_reader import SourceReading, SourceUnavailable, read_source
 
 _LOGGER = logging.getLogger(__name__)
 
 # Hour at which the morning forecast snapshot is taken
 _SNAPSHOT_HOUR = 6
+
+
+class _SolarFusionStore(Store):
+    async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
+        return migrate_storage(old_major_version, old_data)
 
 
 class SolarForecastCoordinator(DataUpdateCoordinator):
@@ -55,12 +60,13 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self._config = entry.data
         self._entry = entry
-        self._store = Store(hass, STORAGE_VERSION, STORAGE_KEY + "_" + entry.entry_id)
+        self._store = _SolarFusionStore(hass, STORAGE_VERSION, STORAGE_KEY + "_" + entry.entry_id)
         self._history: List[Dict] = []
         self._fusion: Optional[FusionEngine] = None
 
-        # {date_iso: {source_id: forecast_kwh}}  – persisted in storage
-        self._morning_snapshots: Dict[str, Dict[str, float]] = {}
+        # {date_iso: {"daily": {source_id: kWh}, "hourly": {source_id: {"HH": Wh}}}}
+        # – persisted in storage
+        self._morning_snapshots: Dict[str, Dict[str, Dict]] = {}
         # {source_id: bool} – letzte Kalibrierungs-Entscheidung (Hysterese) – persisted
         self._calibration_state: Dict[str, bool] = {}
 
@@ -186,11 +192,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         uncertainty_pct = round(sum(_uncs) / len(_uncs), 1) if _uncs else None
 
         # ── 5. Persist ─────────────────────────────────────────────────────
-        await self._store.async_save({
-            "history": self._history,
-            "morning_snapshots": self._morning_snapshots,
-            "calibration_state": self._calibration_state,
-        })
+        await self._async_save()
 
         return {
             "fused_today": fused_today,
@@ -212,22 +214,40 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "active_sources": [r.source_id for r in readings],
             "missing_sources": missing,
             "last_updated": dt_util.now().isoformat(),
-            "morning_snapshot": self._morning_snapshots.get(dt_util.now().date().isoformat(), {}),
+            "morning_snapshot": self.morning_snapshots.get(dt_util.now().date().isoformat(), {}),
         }
+
+    async def _async_save(self) -> None:
+        await self._store.async_save({
+            "history": self._history,
+            "morning_snapshots": self._morning_snapshots,
+            "calibration_state": self._calibration_state,
+        })
 
     # ──────────────────────────────────────────────────────────────────────────
     # Morning snapshot
     # ──────────────────────────────────────────────────────────────────────────
 
     def _take_morning_snapshot(self, readings: List[SourceReading]) -> None:
-        """Store today's 06:00 forecast as reference for RMSE calculation."""
+        """Store today's 06:00 forecast as reference for RMSE calculation.
+
+        Neben den Tagessummen werden die Stundenwerte je Quelle gespeichert
+        (für das Verschattungslernen).
+        """
         today_str = dt_util.now().date().isoformat()
-        snapshot = {r.source_id: r.today_kwh for r in readings}
-        self._morning_snapshots[today_str] = snapshot
+        daily = {r.source_id: r.today_kwh for r in readings}
+        self._morning_snapshots[today_str] = {
+            "daily": daily,
+            "hourly": {
+                r.source_id: _hourly_by_hour(r.hourly_today, today_str)
+                for r in readings
+                if r.hourly_today
+            },
+        }
         _LOGGER.info(
             "Morning snapshot taken for %s: %s",
             today_str,
-            {SOURCE_NAMES.get(k, k): f"{v:.2f} kWh" for k, v in snapshot.items()},
+            {SOURCE_NAMES.get(k, k): f"{v:.2f} kWh" for k, v in daily.items()},
         )
         # Prune snapshots older than 30 days to keep storage clean
         cutoff = (dt_util.now().date() - timedelta(days=30)).isoformat()
@@ -307,7 +327,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 today_kwh=kwh,
                 tomorrow_kwh=0.0,
             )
-            for sid, kwh in morning.items()
+            for sid, kwh in morning.get("daily", {}).items()
         ]
 
         self._fusion.record_actual(yesterday, actual_kwh, reference_readings)
@@ -390,11 +410,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 unchanged += 1
 
         if repaired > 0:
-            await self._store.async_save({
-                "history": self._history,
-                "morning_snapshots": self._morning_snapshots,
-                "calibration_state": self._calibration_state,
-            })
+            await self._async_save()
             if self._fusion:
                 self._fusion._iso_cache.clear()
             # Rebuild the fused forecast so sensors reflect the corrected history
@@ -414,7 +430,12 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
     @property
     def morning_snapshots(self) -> Dict[str, Dict[str, float]]:
-        """Public read-only view of the morning snapshots."""
+        """Tagessummen der Morgen-Snapshots: {date: {source_id: kWh}}."""
+        return {d: v.get("daily", {}) for d, v in self._morning_snapshots.items()}
+
+    @property
+    def morning_snapshots_full(self) -> Dict[str, Dict[str, Dict]]:
+        """Morgen-Snapshots inklusive Stundenwerten."""
         return self._morning_snapshots
 
     async def _async_reconcile_history_on_startup(self) -> None:
@@ -508,3 +529,12 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not read recorder history for %s: %s", entity_id, err)
             return None
+
+
+def _hourly_by_hour(hourly: Dict[str, float], date_str: str) -> Dict[str, float]:
+    """{"YYYY-MM-DDTHH:00": Wh} eines Tages → {"HH": Wh} (kompakt für die Speicherung)."""
+    return {
+        slot[11:13]: round(float(wh), 1)
+        for slot, wh in hourly.items()
+        if slot.startswith(date_str)
+    }
