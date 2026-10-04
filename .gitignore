@@ -1,2 +1,6 @@
 custom_components/solar_fusion/__pycache__/*
 .claude/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage*

@@ -7,7 +7,9 @@ standalone without a running Home Assistant. See tests/test_calc.py.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+import statistics
+from datetime import datetime, timedelta, timezone
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 # Quality-label thresholds (percent of mean actual production)
 SCATTER_BAD_PCT = 30.0      # irreducible scatter at/above this → "poor"
@@ -271,3 +273,332 @@ def weighted_spread_pct(
 
 def _mean(block: List[float]) -> float:
     return sum(block) / len(block)
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Verschattung nach Sonnenstand
+#
+# Gelernt wird ein Faktor je Zelle aus Sonnen-Azimut × Sonnenhöhe, nicht je
+# Uhrzeit: Ein Hindernis verschattet immer dieselbe Himmelsrichtung, die
+# Uhrzeit des Einbruchs wandert dagegen mit der Jahreszeit.
+#
+# Lernen (learn_shading_map):
+#   1. Je Tag, Quelle und Stunde das Verhältnis Ist / Morgenprognose.
+#   2. Wolken herausrechnen: durch das Tagesverhältnis der sicher
+#      unverschatteten Stunden (Sonnenhöhe > SHADING_REF_ELEVATION) teilen.
+#      Nur Tage, an denen dieses Verhältnis über die Referenzstunden stabil
+#      ist (Variationskoeffizient ≤ SHADING_MAX_REF_CV); an wechselhaften
+#      Tagen ist das Stundenverhältnis Wolkenrauschen.
+#   3. Je Stunde den Mittelwert über die stabilen Quellen, eingeordnet nach
+#      dem Sonnenstand zur Slotmitte.
+#   4. Je Zelle der Median über alle Stichproben der Zelle und ihrer
+#      Nachbarn (3 × 3, SHADING_POOL_RADIUS), begrenzt auf
+#      [SHADING_FACTOR_MIN, SHADING_FACTOR_MAX]. Erst ab SHADING_MIN_SAMPLES
+#      Stichproben in dieser Nachbarschaft gilt eine Zelle als gelernt.
+#
+#      Warum Nachbarn: Die Slotmitte (hh:30) wandert je Tag um 0,5–0,7°
+#      Höhe; eine 5° × 2°-Zelle wird von einem Slot nur an wenigen Tagen
+#      getroffen, und nur ein Teil davon ist klar. Ohne Nachbarn erreicht
+#      kaum eine Zelle die Mindestzahl, und der Slot von morgen liegt meist
+#      in einer noch ungelernten Zelle. In der rollierenden Simulation
+#      (lernen aus allen Vortagen, Prognose für den nächsten Tag, 40 % klare
+#      Tage) sinkt der Stunden-RMSE gegenüber „ohne Korrektur“ nur Zelle
+#      allein um 10 %, mit 3 × 3-Nachbarschaft um 49 %, mit groben Zellen
+#      (10° × 4°) um 40 %. Das Stundenverhältnis ist ohnehin über ~12°
+#      Sonnenweg gemittelt, die Glättung kostet daher kaum Schärfe.
+#
+# Anwenden (shading_factor): bilinear zwischen den Mittelpunkten gelernter
+# Zellen; ungelernte Zellen zählen nicht mit, ohne gelernte Nachbarn gilt 1,0.
+# Faktoren ab SHADING_NEUTRAL_ABOVE gelten als 1,0 (Rauschen, keine
+# Verschattung).
+#
+# Gelernt wird mit dem Sonnenstand zur Slotmitte, angewendet als Mittel der
+# Faktoren an den vier Viertelstunden-Mitten (SHADING_APPLY_QUARTERS); nur
+# Positionen mit gelernter Umgebung zählen (siehe shading_slot_factor).
+# Vergleich (synthetische Anlage, Stunden-RMSE gegenüber der Wahrheit):
+#   Karte aus einer Saison, angewendet im Folgejahr
+#     30 % klare Tage:  Mitte 80 Wh, Viertelstunden 54 Wh (ohne Korrektur 222)
+#     50 % klare Tage:  Mitte 63 Wh, Viertelstunden 50 Wh
+#    100 % klare Tage:  Mitte 46 Wh, Viertelstunden 45 Wh
+#   rollierend (lernen aus Vortagen), 25 % / 40 % / 70 % klare Tage:
+#     Mitte 225 / 165 / 114 Wh, Viertelstunden 153 / 132 / 120 Wh
+# Die Viertelstunden greifen entlang des Sonnenwegs auf Nachbarzellen zu und
+# überbrücken so Lücken der Karte; nur in der Anlaufphase mit fast nur klaren
+# Tagen ist die Slotmitte etwas besser (siehe tests/test_shading.py).
+# ──────────────────────────────────────────────────────────────────────────────
+
+SHADING_AZ_STEP = 5.0            # Zellbreite Azimut (°)
+SHADING_EL_STEP = 2.0            # Zellhöhe Sonnenhöhe (°)
+SHADING_REF_ELEVATION = 25.0     # Stunden darüber gelten als sicher unverschattet
+SHADING_MIN_REF_HOURS = 3        # Mindestzahl Referenzstunden je Tag
+SHADING_MAX_REF_CV = 0.15        # max. Streuung (std / mean) des Verhältnisses in den Referenzstunden
+SHADING_MIN_FORECAST_WH = 150.0  # Stunden mit weniger Prognose sind zu verrauscht
+SHADING_MIN_SAMPLES = 3          # Mindestzahl Stichproben (Tage) je Zelle inkl. Nachbarn
+SHADING_POOL_RADIUS = 1          # Nachbarschaft beim Lernen: 1 → 3 × 3 Zellen
+SHADING_FACTOR_MIN = 0.05
+# Keine Faktoren über 1,0: Ein Mehrertrag durch Reflexion ließe sich vom
+# Rauschen der Normierung nicht trennen.
+SHADING_FACTOR_MAX = 1.0
+SHADING_NEUTRAL_ABOVE = 0.9      # Faktoren ab hier gelten als 1,0
+SHADING_APPLY_QUARTERS = True    # Anwenden: Mittel über vier Viertelstunden statt Slotmitte
+# Plausibilität des PV-Sensors: Stunden, in denen die Sonne an allen vier
+# Viertelstunden unter dieser Höhe steht, dürfen zusammen höchstens so viel
+# Ertrag zeigen (Zählerrauschen, Rundung). Mehr deutet auf einen Sensor hin,
+# der nicht nur PV misst – etwa die AC-Leistung eines Hybrid-Wechselrichters,
+# die abends Batterieentladung enthält.
+SHADING_NIGHT_ELEVATION = -2.0
+SHADING_MAX_NIGHT_WH = 200.0
+
+ShadingCells = Dict[str, Dict]   # {"245:12": {"az", "el", "factor", "n", "n_pooled", "learned"}}
+
+
+def sun_position(when: datetime, lat: float, lon: float) -> Tuple[float, float]:
+    """Sonnenstand (Azimut, Höhe) in Grad nach der NOAA-Näherung.
+
+    ``when`` muss zeitzonenbehaftet sein. Azimut im Uhrzeigersinn ab Nord
+    (180° = Süd), Höhe inklusive atmosphärischer Refraktion. Genauigkeit
+    besser als 0,1° für Sonnenhöhen über ein paar Grad.
+    """
+    if when.tzinfo is None:
+        raise ValueError("when must be timezone-aware")
+    utc = when.astimezone(timezone.utc)
+    jd = utc.timestamp() / 86400.0 + 2440587.5
+    jc = (jd - 2451545.0) / 36525.0
+
+    l0 = (280.46646 + jc * (36000.76983 + jc * 0.0003032)) % 360.0
+    m = 357.52911 + jc * (35999.05029 - 0.0001537 * jc)
+    ecc = 0.016708634 - jc * (0.000042037 + 0.0000001267 * jc)
+    mr = math.radians(m)
+    ctr = (
+        math.sin(mr) * (1.914602 - jc * (0.004817 + 0.000014 * jc))
+        + math.sin(2 * mr) * (0.019993 - 0.000101 * jc)
+        + math.sin(3 * mr) * 0.000289
+    )
+    omega = math.radians(125.04 - 1934.136 * jc)
+    app_long = l0 + ctr - 0.00569 - 0.00478 * math.sin(omega)
+    obliq0 = 23.0 + (26.0 + (21.448 - jc * (46.815 + jc * (0.00059 - jc * 0.001813))) / 60.0) / 60.0
+    obliq = math.radians(obliq0 + 0.00256 * math.cos(omega))
+    decl = math.asin(math.sin(obliq) * math.sin(math.radians(app_long)))
+
+    y = math.tan(obliq / 2) ** 2
+    l0r = math.radians(l0)
+    eq_time = 4 * math.degrees(
+        y * math.sin(2 * l0r)
+        - 2 * ecc * math.sin(mr)
+        + 4 * ecc * y * math.sin(mr) * math.cos(2 * l0r)
+        - 0.5 * y * y * math.sin(4 * l0r)
+        - 1.25 * ecc * ecc * math.sin(2 * mr)
+    )
+
+    minutes = utc.hour * 60 + utc.minute + utc.second / 60.0 + utc.microsecond / 6e7
+    true_solar = (minutes + eq_time + 4 * lon) % 1440.0
+    hour_angle = math.radians(true_solar / 4.0 - 180.0)
+
+    latr = math.radians(lat)
+    cos_zen = (
+        math.sin(latr) * math.sin(decl)
+        + math.cos(latr) * math.cos(decl) * math.cos(hour_angle)
+    )
+    zen = math.acos(max(-1.0, min(1.0, cos_zen)))
+    elevation = 90.0 - math.degrees(zen)
+
+    sin_zen = math.sin(zen)
+    if sin_zen < 1e-9:
+        azimuth = 180.0
+    else:
+        cos_az = (math.sin(latr) * cos_zen - math.sin(decl)) / (math.cos(latr) * sin_zen)
+        az = math.degrees(math.acos(max(-1.0, min(1.0, cos_az))))
+        azimuth = (az + 180.0) % 360.0 if hour_angle > 0 else (540.0 - az) % 360.0
+
+    return azimuth, elevation + _refraction(elevation)
+
+
+def _refraction(elevation: float) -> float:
+    """Atmosphärische Refraktion in Grad (NOAA)."""
+    if elevation > 85.0:
+        return 0.0
+    te = math.tan(math.radians(elevation))
+    if elevation > 5.0:
+        arc_sec = 58.1 / te - 0.07 / te ** 3 + 0.000086 / te ** 5
+    elif elevation > -0.575:
+        arc_sec = 1735.0 + elevation * (
+            -518.2 + elevation * (103.4 + elevation * (-12.79 + elevation * 0.711))
+        )
+    else:
+        arc_sec = -20.772 / te
+    return arc_sec / 3600.0
+
+
+def slot_sun_positions(
+    slot_start: datetime, lat: float, lon: float, quarters: bool = False
+) -> List[Tuple[float, float]]:
+    """Sonnenstand eines Stundenslots: zur Slotmitte oder zu vier Viertelstunden-Mitten."""
+    offsets = (7.5, 22.5, 37.5, 52.5) if quarters else (30.0,)
+    return [sun_position(slot_start + timedelta(minutes=o), lat, lon) for o in offsets]
+
+
+def shading_cell(az: float, el: float) -> str:
+    """Schlüssel der Zelle, in der (az, el) liegt: "<az_unten>:<el_unten>"."""
+    a = int(math.floor((az % 360.0) / SHADING_AZ_STEP) * SHADING_AZ_STEP)
+    e = int(math.floor(el / SHADING_EL_STEP) * SHADING_EL_STEP)
+    return f"{a}:{e}"
+
+
+def _neighbour_keys(key: str, radius: int) -> List[str]:
+    a, e = (int(x) for x in key.split(":"))
+    n_az = int(round(360.0 / SHADING_AZ_STEP))
+    out = []
+    for da in range(-radius, radius + 1):
+        ai = (round(a / SHADING_AZ_STEP) + da) % n_az
+        for de in range(-radius, radius + 1):
+            out.append(f"{int(ai * SHADING_AZ_STEP)}:{int(e + de * SHADING_EL_STEP)}")
+    return out
+
+
+def shading_day_samples(
+    hours: Sequence[Dict], excluded_sources: Iterable[str] = ()
+) -> Optional[Dict[int, float]]:
+    """Normierte Stundenverhältnisse eines Tages, gemittelt über stabile Quellen.
+
+    ``hours``: je Stunde ``{"az", "el", "actual": Wh, "forecast": {source: Wh}}``.
+    Quellen in ``excluded_sources`` (z. B. mit eigenem Horizontprofil) gehen
+    nicht ein. Rückgabe ``{Index in hours: Verhältnis}`` oder ``None``, wenn
+    keine Quelle an diesem Tag stabil ist.
+    """
+    excluded = set(excluded_sources)
+    sources = sorted({
+        s for h in hours for s in h.get("forecast", {}) if s not in excluded
+    })
+    per_hour: Dict[int, List[float]] = {}
+    for sid in sources:
+        ref_ratios: List[float] = []
+        ref_actual = ref_fc = 0.0
+        for h in hours:
+            fc = h.get("forecast", {}).get(sid)
+            if fc is None or fc < SHADING_MIN_FORECAST_WH or h["el"] <= SHADING_REF_ELEVATION:
+                continue
+            ref_ratios.append(h["actual"] / fc)
+            ref_actual += h["actual"]
+            ref_fc += fc
+        if len(ref_ratios) < SHADING_MIN_REF_HOURS or ref_actual <= 0:
+            continue
+        mean = sum(ref_ratios) / len(ref_ratios)
+        if statistics.pstdev(ref_ratios) / mean > SHADING_MAX_REF_CV:
+            continue
+        day_ratio = ref_actual / ref_fc
+        for i, h in enumerate(hours):
+            fc = h.get("forecast", {}).get(sid)
+            if fc is None or fc < SHADING_MIN_FORECAST_WH or h["el"] <= 0:
+                continue
+            per_hour.setdefault(i, []).append(h["actual"] / fc / day_ratio)
+    if not per_hour:
+        return None
+    return {i: sum(v) / len(v) for i, v in per_hour.items()}
+
+
+def learn_shading_map(
+    days: Sequence[Sequence[Dict]],
+    excluded_sources: Iterable[str] = (),
+    min_samples: int = SHADING_MIN_SAMPLES,
+) -> Tuple[ShadingCells, int]:
+    """Verschattungskarte aus mehreren Tagen (je Tag eine Liste wie bei shading_day_samples).
+
+    Rückgabe ``(cells, used_days)``. ``cells`` enthält jede Zelle, in deren
+    Nachbarschaft (SHADING_POOL_RADIUS) mindestens eine Stichprobe liegt:
+    Mittelpunkt, Median-Faktor der Nachbarschaft (begrenzt), eigene
+    Stichproben ``n`` und Stichproben der Nachbarschaft ``n_pooled``.
+    Gelernt (also angewendet) wird sie ab ``n_pooled`` ≥ ``min_samples``.
+    """
+    excluded = tuple(excluded_sources)
+    buckets: Dict[str, List[float]] = {}
+    used = 0
+    for hours in days:
+        samples = shading_day_samples(hours, excluded)
+        if samples is None:
+            continue
+        used += 1
+        for i, ratio in samples.items():
+            key = shading_cell(hours[i]["az"], hours[i]["el"])
+            buckets.setdefault(key, []).append(ratio)
+
+    keys = {k for key in buckets for k in _neighbour_keys(key, SHADING_POOL_RADIUS)}
+    cells: ShadingCells = {}
+    for key in sorted(keys):
+        pooled = [
+            r for k in _neighbour_keys(key, SHADING_POOL_RADIUS) for r in buckets.get(k, ())
+        ]
+        a, e = (int(x) for x in key.split(":"))
+        factor = min(SHADING_FACTOR_MAX, max(SHADING_FACTOR_MIN, statistics.median(pooled)))
+        cells[key] = {
+            "az": a + SHADING_AZ_STEP / 2,
+            "el": e + SHADING_EL_STEP / 2,
+            "factor": round(factor, 3),
+            "n": len(buckets.get(key, ())),
+            "n_pooled": len(pooled),
+            "learned": len(pooled) >= min_samples,
+        }
+    return cells, used
+
+
+def _effective_factor(cell: Dict) -> float:
+    f = cell["factor"]
+    return 1.0 if f >= SHADING_NEUTRAL_ABOVE else f
+
+
+def shading_factor(cells: ShadingCells, az: float, el: float) -> float:
+    """Verschattungsfaktor für einen Sonnenstand (1,0 = keine Korrektur).
+
+    Bilinear zwischen den vier umgebenden Zellmittelpunkten; berücksichtigt
+    werden nur gelernte Zellen, ihre Gewichte werden neu normiert. Gibt es
+    keinen gelernten Nachbarn, bleibt es bei 1,0.
+    """
+    factor = _learned_factor(cells, az, el)
+    return 1.0 if factor is None else factor
+
+
+def _learned_factor(cells: ShadingCells, az: float, el: float) -> Optional[float]:
+    """Wie shading_factor, aber ``None`` ohne gelernten Nachbarn (unbekannt)."""
+    if not cells or el <= 0:
+        return None
+    fa = (az % 360.0) / SHADING_AZ_STEP - 0.5
+    fe = el / SHADING_EL_STEP - 0.5
+    a0, e0 = math.floor(fa), math.floor(fe)
+    ta, te = fa - a0, fe - e0
+    n_az = int(round(360.0 / SHADING_AZ_STEP))
+    w_sum = acc = 0.0
+    for da, wa in ((0, 1 - ta), (1, ta)):
+        for de, we in ((0, 1 - te), (1, te)):
+            w = wa * we
+            if w <= 0:
+                continue
+            ai = (a0 + da) % n_az
+            key = f"{int(ai * SHADING_AZ_STEP)}:{int((e0 + de) * SHADING_EL_STEP)}"
+            cell = cells.get(key)
+            if cell is None or not cell.get("learned"):
+                continue
+            w_sum += w
+            acc += w * _effective_factor(cell)
+    if w_sum <= 0:
+        return None
+    return acc / w_sum
+
+
+def shading_slot_factor(
+    cells: ShadingCells, positions: Sequence[Tuple[float, float]]
+) -> float:
+    """Mittlerer Faktor über die Sonnenstände eines Slots (siehe slot_sun_positions).
+
+    Gemittelt wird nur über Positionen mit gelernter Umgebung. Eine noch
+    unbekannte Position zählt nicht als 1,0: Am Rand der Karte – etwa die
+    letzte Viertelstunde, wenn die Sonne tiefer in den Schatten wandert als
+    an den bisherigen Lerntagen – würde sie den Schatten sonst verwässern.
+    Ist keine Position bekannt, bleibt es bei 1,0.
+    """
+    if not cells or not positions:
+        return 1.0
+    known = [
+        f for f in (_learned_factor(cells, az, el) for az, el in positions) if f is not None
+    ]
+    if not known:
+        return 1.0
+    return sum(known) / len(known)

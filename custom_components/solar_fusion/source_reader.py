@@ -15,6 +15,7 @@ Each reader returns a SourceReading dataclass or raises SourceUnavailable.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, List, Optional
@@ -27,6 +28,7 @@ from .const import (
     FORECAST_SOLAR_TODAY,
     FORECAST_SOLAR_TOMORROW,
     OPEN_METEO_ATTR_HOURLY,
+    OPEN_METEO_ATTR_HOURLY_LEGACY,
     OPEN_METEO_TODAY,
     OPEN_METEO_TOMORROW,
     SOLCAST_ATTR_DETAILED_TODAY,
@@ -45,6 +47,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Mapping: ISO-hour-string → Wh  (e.g. "2024-07-15T08:00" → 1200.0)
 HourlyWh = Dict[str, float]
+
+# Numerischer Suffix, den HA bei Namenskollisionen anhängt ("…_today_2")
+_OM_ID_SUFFIX = re.compile(r"_\d+$")
 
 
 class SourceUnavailable(Exception):
@@ -134,6 +139,10 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
       sensor.energy_production_today      → state = kWh today
       sensor.energy_production_tomorrow   → state = kWh tomorrow
       attribute "wh_hours" on today/tomorrow  → {ISO-ts: Wh} hourly breakdown
+                                                 (Schlüssel = Periodenende)
+
+    Die Core-Integration setzt dieses Attribut nicht; Stundenwerte gibt es nur,
+    wenn eine eigene Entität es bereitstellt.
     """
     today_id = entity_map.get("today", FORECAST_SOLAR_TODAY)
     tomorrow_id = entity_map.get("tomorrow", FORECAST_SOLAR_TOMORROW)
@@ -144,8 +153,12 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
     today_kwh = _parse_float(today_state.state, today_id)
     tomorrow_kwh = _parse_float(tomorrow_state.state, tomorrow_id)
 
-    hourly_today = _extract_wh_hours(today_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}))
-    hourly_tomorrow = _extract_wh_hours(tomorrow_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}))
+    hourly_today = _extract_wh_hours(
+        today_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True
+    )
+    hourly_tomorrow = _extract_wh_hours(
+        tomorrow_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True
+    )
 
     return SourceReading(
         source_id=SOURCE_FORECAST_SOLAR,
@@ -165,10 +178,14 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
     (sensor.energy_production_today). Resolving via the registry ensures we
     read the correct entity and never collide with Forecast.Solar.
 
-    The match is intentionally strict: only entities whose ID contains
-    "energy_production_today" / "energy_production_tomorrow" are accepted.
-    This avoids false matches on other Open-Meteo sensors that also contain
-    "_today" in their name, e.g. "power_highest_peak_time_today".
+    Matching uses the registry's ``translation_key`` (``energy_production_today``
+    / ``energy_production_tomorrow``), which does not depend on the entity ID.
+    When Forecast.Solar is installed first, Open-Meteo's entity gets a suffix
+    (``sensor.energy_production_today_2``) and an ID-based match would miss it
+    and fall back to Forecast.Solar's entity. Entries without a translation key
+    (older versions) are matched by an ID ending in "energy_production_today",
+    optionally followed by a numeric suffix. This avoids false matches on other
+    Open-Meteo sensors such as "power_highest_peak_time_today".
 
     Falls back to hardcoded OPEN_METEO_TODAY/TOMORROW constants if no matching
     entity is found in the registry.
@@ -182,11 +199,11 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
     for entry in registry.entities.values():
         if entry.platform != "open_meteo_solar_forecast" or entry.domain != "sensor":
             continue
-        eid_lower = entry.entity_id.lower()
-        if eid_lower.endswith("energy_production_today"):
-            today_id = entry.entity_id
-        elif eid_lower.endswith("energy_production_tomorrow"):
-            tomorrow_id = entry.entity_id
+        kind = entry.translation_key or _OM_ID_SUFFIX.sub("", entry.entity_id.lower())
+        if kind.endswith("energy_production_today"):
+            today_id = today_id or entry.entity_id
+        elif kind.endswith("energy_production_tomorrow"):
+            tomorrow_id = tomorrow_id or entry.entity_id
         if today_id and tomorrow_id:
             break
 
@@ -231,8 +248,8 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
         today_id, today_state.state, tomorrow_id, tomorrow_state.state,
     )
 
-    hourly_today = _extract_wh_hours(today_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
-    hourly_tomorrow = _extract_wh_hours(tomorrow_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
+    hourly_today = _extract_wh_hours(_open_meteo_hourly_attr(today_state))
+    hourly_tomorrow = _extract_wh_hours(_open_meteo_hourly_attr(tomorrow_state))
 
     return SourceReading(
         source_id=SOURCE_OPEN_METEO,
@@ -241,6 +258,12 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
         hourly_today=hourly_today,
         hourly_tomorrow=hourly_tomorrow,
     )
+
+
+def _open_meteo_hourly_attr(state) -> dict:
+    """Stundenwerte einer Open-Meteo-Entität ("wh_period", Schlüssel = Stundenbeginn)."""
+    attrs = state.attributes
+    return attrs.get(OPEN_METEO_ATTR_HOURLY) or attrs.get(OPEN_METEO_ATTR_HOURLY_LEGACY) or {}
 
 
 def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional[str]]:
@@ -369,19 +392,37 @@ def _extract_solcast_hourly(slots: list) -> HourlyWh:
     return result
 
 
-def _extract_wh_hours(raw: dict) -> HourlyWh:
+def _extract_wh_hours(raw: dict, period_end: bool = False) -> HourlyWh:
     """
-    Convert the "wh_hours" attribute dict to a normalised HourlyWh dict.
+    Convert an hourly {timestamp: Wh} attribute dict to a normalised HourlyWh dict.
     Keys may be ISO strings or datetime objects; values are Wh (float).
+
+    ``period_end``: der Schlüssel bezeichnet das Ende der Periode (Forecast.Solar).
+    Der Wert gehört dann zu der Stunde, die kurz vor dem Schlüssel liegt
+    (08:00 → Slot 07:00, Sonnenaufgang 07:13 → Slot 07:00). Mehrere Perioden
+    in derselben Stunde werden summiert.
     """
     result: HourlyWh = {}
     for k, v in raw.items():
-        ts = _normalise_ts(str(k))
         try:
-            result[ts] = float(v)
+            wh = float(v)
         except (ValueError, TypeError):
-            pass
+            continue
+        if period_end:
+            ts = _normalise_ts(_shift_back(k))
+            result[ts] = result.get(ts, 0.0) + wh
+        else:
+            result[_normalise_ts(str(k))] = wh
     return result
+
+
+def _shift_back(ts_raw):
+    """Zeitstempel um eine Sekunde zurück (Periodenende → letzte Sekunde der Periode)."""
+    from datetime import timedelta
+    if isinstance(ts_raw, datetime):
+        return ts_raw - timedelta(seconds=1)
+    dt = dt_util.parse_datetime(str(ts_raw).replace(" ", "T"))
+    return dt - timedelta(seconds=1) if dt is not None else str(ts_raw)
 
 
 def _normalise_ts(ts_raw) -> str:
@@ -416,3 +457,42 @@ def _normalise_ts(ts_raw) -> str:
         except ValueError:
             continue
     return ts[:16] if len(ts) >= 16 else ts
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rekonstruktion aus der Recorder-Historie (rückwirkendes Lernen)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def today_entity_id(hass: HomeAssistant, source_id: str, entity_map: Dict[str, str]) -> Optional[str]:
+    """Entität mit der Heute-Prognose einer Quelle (gleiche Auflösung wie beim Lesen)."""
+    if source_id == SOURCE_FORECAST_SOLAR:
+        return entity_map.get("today", FORECAST_SOLAR_TODAY)
+    if source_id == SOURCE_OPEN_METEO:
+        today_id, _ = _find_open_meteo_entities(hass)
+        override = entity_map.get("today", "")
+        return override if override and override != OPEN_METEO_TODAY else today_id
+    if source_id == SOURCE_SOLCAST:
+        return entity_map.get("today") or _find_solcast_entities(hass)[0]
+    return None
+
+
+def hourly_from_attributes(source_id: str, attributes) -> HourlyWh:
+    """Stundenwerte einer Quelle aus den Attributen ihrer Heute-Entität.
+
+    Funktioniert nur, wenn der Recorder die Attribute speichert: Open-Meteo
+    ("wh_period") ja, Solcast ("detailedHourly") nein – die Integration nimmt
+    es von der Aufzeichnung aus.
+    """
+    if source_id == SOURCE_FORECAST_SOLAR:
+        return _extract_wh_hours(attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True)
+    if source_id == SOURCE_OPEN_METEO:
+        return _extract_wh_hours(_open_meteo_hourly_attr(_AttrState(attributes)))
+    if source_id == SOURCE_SOLCAST:
+        return _extract_solcast_hourly(attributes.get(SOLCAST_ATTR_DETAILED_TODAY, []))
+    return {}
+
+
+class _AttrState:
+    """Adapter: _open_meteo_hourly_attr erwartet ein Objekt mit .attributes."""
+
+    def __init__(self, attributes) -> None:
+        self.attributes = attributes

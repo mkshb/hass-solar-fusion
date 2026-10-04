@@ -28,3 +28,26 @@ repair_history:
       example: "2026-03-19"
       selector:
         date:
+
+learn_shading:
+  name: Learn Shading From Recorder
+  description: >-
+    Learns the shading map retroactively. Rebuilds each source's 06:00 hourly
+    forecast from the recorder state history (only sources whose hourly
+    attribute is recorded, e.g. Open-Meteo "wh_period"; Solcast's
+    "detailedHourly" is not recorded) and reads hourly production from the
+    long-term statistics. Only reaches back as far as the recorder keeps state
+    history (default 10 days). Days that already have an hourly morning
+    snapshot are kept.
+  fields:
+    days:
+      name: Days
+      description: How many past days to reconstruct.
+      required: false
+      default: 10
+      example: 10
+      selector:
+        number:
+          min: 1
+          max: 60
+          mode: box

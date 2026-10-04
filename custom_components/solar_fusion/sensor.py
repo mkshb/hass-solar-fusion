@@ -23,7 +23,7 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import UnitOfEnergy
+from homeassistant.const import EntityCategory, UnitOfEnergy
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -62,6 +62,7 @@ async def async_setup_entry(
         FusedHourlySensor(coordinator, config_entry, hour_offset=2),
         ForecastUncertaintySensor(coordinator, config_entry),
         MorningSnapshotSensor(coordinator, config_entry),
+        ShadingSensor(coordinator, config_entry),
     ]
 
     for source_id in config_entry.data.get(CONF_SOURCES_KEY, []):
@@ -128,6 +129,16 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
                         self._source_state[eid]["start"] = float(saved)
             except (ValueError, TypeError):
                 pass
+
+        # Gespeicherter Zustand vom Vortag (Neustart nach Mitternacht, bevor sich
+        # eine Quelle geändert hat): Tagesbeginn verwerfen und unten aus den
+        # aktuellen Quellwerten neu setzen. Sonst stünde bis zur ersten Änderung
+        # der Quelle – nachts also stundenlang – der Vortagesertrag hier.
+        if self._today != dt_util.now().date():
+            self._today = dt_util.now().date()
+            self._value = None
+            for src in self._source_state.values():
+                src["start"] = None
 
         self.async_on_remove(
             async_track_state_change_event(
@@ -533,6 +544,61 @@ class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Shading sensor
+# ──────────────────────────────────────────────────────────────────────────────
+
+class ShadingSensor(CoordinatorEntity, SensorEntity):
+    """Gelernte Verschattung: Zustand = Zahl gelernter Zellen (Azimut × Höhe)."""
+
+    _attr_icon = "mdi:weather-partly-cloudy"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{entry.entry_id}_shading"
+        self._attr_name = _entity_name(entry, "Diagnostics – Shading")
+        self._attr_device_info = _device(entry)
+
+    @property
+    def native_value(self) -> int:
+        cells = self.coordinator.shading.get("cells", {})
+        return sum(1 for c in cells.values() if c.get("learned"))
+
+    @property
+    def extra_state_attributes(self) -> Dict[str, Any]:
+        shading = self.coordinator.shading
+        cells = shading.get("cells", {})
+        shaded = sorted(
+            (
+                {
+                    "azimuth": c["az"],
+                    "elevation": c["el"],
+                    "factor": c["factor"],
+                    "samples": c["n"],
+                }
+                for c in cells.values()
+                if c.get("learned") and c["factor"] < calc.SHADING_NEUTRAL_ABOVE
+            ),
+            key=lambda c: (c["azimuth"], c["elevation"]),
+        )
+        data = self.coordinator.data or {}
+        ratios = data.get("shading_ratios", {})
+        return {
+            **self.coordinator.shading_settings,
+            "shaded_cells": shaded,
+            "learning_days_used": shading.get("used_days", 0),
+            "learning_days_stored": len(shading.get("days", {})),
+            "last_learning_run": shading.get("last_run"),
+            # Anteil der Tagesenergie, der je Quelle nach der Korrektur bleibt
+            "energy_kept": {
+                d: {SOURCE_NAMES.get(sid, sid): round(r, 3) for sid, r in vals.items()}
+                for d, vals in sorted(ratios.items())
+            },
+        }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Weight helpers
 # ──────────────────────────────────────────────────────────────────────────────
 
@@ -544,6 +610,8 @@ def _weight_attrs(info: Dict) -> Dict[str, Any]:
         # False → Kalibrierung verschlechtert diese Quelle, sie geht roh in die Fusion ein
         "calibration_active": info.get("calibration_active", True),
         "rmse_calibrated_kwh": info.get("rmse_calibrated"),
+        # True → Kalibrierung/Gewicht aus der verschattungskorrigierten Morgenprognose
+        "shading_corrected_history": info.get("shading_corrected_history", False),
     }
 
 

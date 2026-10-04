@@ -95,6 +95,11 @@ All settings can be changed later via **Settings → Devices & Services → Sola
 - **Exclusion threshold k** (default 2.0): a source whose RMSE exceeds k × the RMSE of the best source gets weight 0. It keeps being evaluated and returns automatically once its error drops below the threshold.
 - **Minimum evaluated days** (default 7): until a source has this many evaluated days, it is weighted neutrally; if no source has enough days, all sources are weighted equally.
 
+and three shading options (see [Shading by sun position](#shading-by-sun-position)):
+- **Learn shading from hourly production** (default off)
+- **Apply learned shading to the forecast** (default on – has no effect until cells are learned)
+- **Sources that already include a horizon profile** (default none), e.g. Open-Meteo with `use_horizon` enabled. These sources are neither corrected nor used for learning.
+
 ---
 
 ## Sensors created
@@ -279,6 +284,31 @@ The `history` dict is directly usable in ApexCharts / template cards to plot how
 
 ---
 
+### Diagnostics – Shading
+
+State: number of learned shading cells (sun azimuth × elevation, see [Shading by sun position](#shading-by-sun-position)). Diagnostic entity.
+
+Key attributes:
+
+```yaml
+learn: true
+apply: true
+horizon_sources: []
+active: true                 # apply on and at least one learned cell
+shaded_cells:                # learned cells with factor < 0.9
+  - {azimuth: 247.5, elevation: 13.0, factor: 0.43, samples: 3}
+  - {azimuth: 262.5, elevation: 5.0, factor: 0.11, samples: 4}
+learning_days_used: 4        # days that passed the cloud filter
+learning_days_stored: 7
+last_learning_run: "2026-10-04T00:05:00+02:00"
+energy_kept:                 # share of each source's daily energy left after correction
+  "2026-10-04": {Open-Meteo Solar Forecast: 0.948, Solcast PV Forecast: 0.951}
+```
+
+The complete map (all cells with sample counts) and the stored learning days are part of the integration's diagnostics download.
+
+---
+
 ### Diagnostics – PV Daily Production
 
 A built-in daily production meter sensor that replaces the need for an external `utility_meter` helper. It resets automatically at midnight and persists its value across HA restarts.
@@ -379,11 +409,13 @@ A dedicated Lovelace card for Solar Fusion is maintained in a separate repositor
 
 Each integration exposes hourly data in a different way. Solar Fusion reads them as follows:
 
-| Source | Attribute | Location |
-|--------|-----------|----------|
-| Forecast.Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
-| Open-Meteo Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
-| Solcast | `detailedHourly` (list `[{period_start, pv_estimate}]`) | On both today and tomorrow sensor |
+| Source | Attribute | Timestamp means | Location |
+|--------|-----------|-----------------|----------|
+| Forecast.Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | **end** of the period (Forecast.Solar API) | Not set by the HA core integration – only used if a custom entity provides it |
+| Open-Meteo Solar | `wh_period` (dict `{ISO-ts: Wh}`), legacy `wh_hours` | start of the hour | On both today and tomorrow sensor |
+| Solcast | `detailedHourly` (list `[{period_start, pv_estimate}]`) | start of the hour | On both today and tomorrow sensor |
+
+All values are stored under the local hour in which the period **starts**. Up to v0.2.3 Solar Fusion looked for `wh_hours` on Open-Meteo, which the sensor does not have, so Open-Meteo's hourly shape was never used; the fused hourly forecast followed Solcast's shape alone.
 
 When no hourly data is available for a day (source provides daily totals only), Solar Fusion builds a synthetic hourly profile: it averages the available `hourly_today` profiles from all sources, or falls back to a Gaussian bell curve peaking at 13:00 with σ = 3 h.
 
@@ -424,10 +456,16 @@ Every update interval:
      equal weights while no source has 7 days. Missing sources are dropped
      and the rest renormalised. Daily and hourly fusion use the same weights.
 
+  Shading (only with "apply" on and a learned map):
+  3a. Each source's hourly Wh × shading factor of the slot's sun position
+      (mean over the four quarter-hour positions); horizon sources untouched.
+      The source's daily total shrinks by the same share before step 5.
+
   Hourly fusion:
   4. Calibrated hourly Wh values fused as weighted average per slot
   5. Fused hourly total normalised to match weighted average of calibrated
-     daily totals (ensures hourly sum = expected day total)
+     daily totals after shading (ensures hourly sum = expected day total
+     without undoing the hourly shading)
 
   Uncertainty:
   6. Weighted standard deviation of source values per slot,
@@ -445,6 +483,31 @@ After approximately **3 weeks** of history, seasonal weighting and isotonic cali
 
 ---
 
+## Shading by sun position
+
+Forecast models know the sky, not your neighbour's roof. If a building or a tree shades your panels in the late afternoon, every source over-forecasts those hours – and the hour of the drop moves by about a minute per day with the season, so a correction per clock time goes stale. Solar Fusion therefore learns a correction **per sun position**: a map of cells of 5° azimuth × 2° elevation, each with a factor between 0.05 and 1.0. One map applies to all sources. No horizon file is needed.
+
+**Learning** (option *Learn shading from hourly production*, runs after midnight):
+
+1. Hourly production of each finished day comes from the recorder's **long-term statistics** (`hour`, `change`) of the PV Daily Production meter, or the configured PV sensors summed. Long-term statistics are kept indefinitely, unlike the 10-day state history.
+2. The reference forecast is the **hourly** 06:00 morning snapshot of each source (stored since v0.3.0; older snapshots without hourly values are skipped).
+3. For every hour: ratio = actual / forecast. Clouds are removed by dividing by the day's ratio in the safely unshaded hours (sun elevation > 25°). Only days whose ratio is **stable** across those reference hours (coefficient of variation ≤ 0.15, at least 3 hours) are used – on a changeable day the hourly ratio is cloud noise, not shading. At 53° N, days with three hours above 25° exist from about March to mid-October; cells learned in autumn carry over.
+4. Each hour is placed by the sun position at the slot's midpoint. A cell's factor is the median of all samples in the cell **and its eight neighbours**, clamped to [0.05, 1.0]; it counts as learned with at least 3 samples. The neighbourhood matters: the midpoint of a given slot moves 0.5–0.7° in elevation per day, so a single cell is hit on only a few clear days. In a rolling simulation (learn from all previous days, forecast the next day, 40 % clear days) the hourly error dropped by 49 % with the neighbourhood versus 10 % with single cells.
+5. Factors of 0.9 or more count as 1.0 (normalisation noise, not shading). Factors above 1.0 (reflection) are not used, since they cannot be told apart from noise.
+
+**Applying** (option *Apply learned shading*): each hour of each source is multiplied by the mean factor at its four quarter-hour sun positions (bilinear between learned cells; unknown areas stay at 1.0) **before** weighting, and the source's daily total is reduced by the same share, so `Forecast – Today/Tomorrow` equals the sum of the corrected hours. Quarter-hour positions whose surroundings have not been learned yet are left out of the mean instead of counting as 1.0. Quarter-hours beat the slot midpoint at realistic weather (20–33 % lower hourly error with 30–50 % clear days); only during the first weeks with nearly all-clear days is the midpoint marginally better.
+
+**Calibration order.** The isotonic/linear calibration learns daily bias from `forecast_kwh` vs. `actual_kwh`. A raw forecast's bias already contains the average shading loss, so calibrating raw values and then shading would subtract the loss twice. Therefore:
+
+- Once a source has *min evaluated days* history records with a shading-corrected morning forecast (`forecast_corrected_kwh`, stored while *apply* is on), calibration, gating and weights for that source run on the **corrected** values; daily total = calibrated(raw × kept share).
+- Until then they run on the **raw** values. If the source's calibration is active and already learned, its daily total stays calibrated(raw) and shading only shifts energy between hours; otherwise the daily total is raw × kept share.
+
+**Double correction.** Mark sources that already model the horizon (e.g. Open-Meteo with `use_horizon`) under *Sources that already include a horizon profile*.
+
+**Retroactive learning.** `solar_fusion.learn_shading` (optional `days`, default 10) rebuilds the 06:00 hourly forecast of past days from the recorder's state history and learns from them. This only works for sources whose hourly attribute is recorded: Open-Meteo's `wh_period` is, Solcast's `detailedHourly` is excluded from recording by that integration. It reaches back as far as the recorder keeps states (default 10 days). The action returns a summary per instance.
+
+---
+
 ## Data flow
 
 **Forecast sources** — Forecast.Solar, Open-Meteo Solar and Solcast each provide daily kWh totals and hourly Wh breakdowns, which Solar Fusion reads directly from their HA entities. These are calibrated, weighted and fused into four output sensors: **Forecast – Today**, **Forecast – Tomorrow**, **Forecast – Hourly** and **Forecast – Uncertainty**. The **Quality – \<Source\>** sensors and the **Diagnostics – Morning Snapshot** sensor are updated as part of the same process.
@@ -457,6 +520,8 @@ After approximately **3 weeks** of history, seasonal weighting and isotonic cali
 
 All history records, morning snapshots, and isotonic regression caches are persisted in HA's built-in storage (`.storage/solar_fusion_history_<entry_id>`). Data survives HA restarts automatically. Morning snapshots are pruned after 30 days; history records follow the configured rolling window (default: 14 days for RMSE, all seasonal data retained for isotonic fitting).
 
+Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected, hourly}` per day; version-1 data is migrated automatically. Hourly actuals and forecasts for shading are kept for 400 days, so every sun position recurs once.
+
 ---
 
 ## Requirements
@@ -464,6 +529,22 @@ All history records, morning snapshots, and isotonic regression caches are persi
 - Home Assistant 2023.6 or newer
 - The `recorder` integration (enabled by default in HA)
 - At least one supported solar forecast integration installed and providing data
+
+---
+
+## Development & tests
+
+Two test suites, both run in CI (`.github/workflows/tests.yaml`):
+
+- **`tests/`** – unit tests without Home Assistant (calculation, shading, fusion with a stub for `homeassistant.util.dt`, storage migration). Run each file as a script (`python3 tests/test_calc.py`) or all with `pytest`.
+- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
+
+  ```bash
+  pip install -r requirements_test.txt
+  pytest tests_ha
+  ```
+
+Run the two suites separately: the unit tests replace `homeassistant` modules with stubs.
 
 ---
 

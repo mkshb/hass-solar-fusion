@@ -5,13 +5,14 @@ Combines multiple SourceReadings using adaptive weighted averaging with:
   - Seasonal bias segmentation  (per-month bias/RMSE windows)
   - Isotonic regression calibration  (monotone, non-linear correction)
   - Gewichtung nach inverser Fehlervarianz mit Ausschlussschwelle
+  - Verschattung nach Sonnenstand (gelernt, je Quelle vor dem Gewichten)
 """
 from __future__ import annotations
 
 import logging
 import math
-from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import date, datetime, timedelta
+from typing import Dict, Iterable, List, Optional, Tuple
 
 from homeassistant.util import dt as dt_util
 
@@ -33,7 +34,8 @@ MIN_ISO_POINTS = 20
 SEASONAL_MONTH_RADIUS = 1
 
 # One history record per (date, source):
-# {"date": "YYYY-MM-DD", "source": str, "forecast_kwh": float, "actual_kwh": float}
+# {"date": "YYYY-MM-DD", "source": str, "forecast_kwh": float, "actual_kwh": float,
+#  "forecast_corrected_kwh": float (optional, Morgenprognose nach Verschattungskorrektur)}
 HistoryRecord = Dict
 
 
@@ -82,6 +84,16 @@ def _recent_records(
 
 def _round_or_none(value: Optional[float]) -> Optional[float]:
     return round(value, 3) if value is not None else None
+
+
+def _shading_ratio(hourly: HourlyWh, factors: Dict[str, float]) -> float:
+    """Anteil der Tagesenergie, der nach der Verschattungskorrektur übrig bleibt."""
+    if not factors:
+        return 1.0
+    total = sum(max(0.0, wh) for wh in hourly.values())
+    if total <= 0:
+        return 1.0
+    return sum(max(0.0, wh) * factors.get(slot, 1.0) for slot, wh in hourly.items()) / total
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -159,6 +171,25 @@ class FusionEngine:
     6. Fuse hourly Wh using weighted average.
     7. Normalise fused hourly total to weighted average of calibrated daily totals.
     8. Return fused forecast + uncertainty (weighted spread of sources as %).
+
+    Verschattung (nur mit ``shading_apply`` und gelernter Karte)
+    ------------------------------------------------------------
+    Jede Stunde einer Quelle wird vor dem Gewichten mit dem Faktor ihres
+    Sonnenstands (Mittel über die vier Viertelstunden) multipliziert; Quellen in ``horizon_sources``
+    bleiben unverändert. Der Tageswert der Quelle sinkt im selben Verhältnis
+    (``ratio`` = korrigierte / rohe Stundensumme), damit Schritt 7 die
+    Abschwächung nicht wieder aufhebt. Reihenfolge gegenüber der Kalibrierung:
+
+    * Modus „korrigiert“ (sobald je Quelle ``min_eval_days`` Historientage mit
+      ``forecast_corrected_kwh`` im Fenster liegen): Kalibrierung und Gewichte
+      lernen auf der korrigierten Morgenprognose. Tageswert =
+      kalibriert(roh × ratio).
+    * Modus „roh“ (Anlaufphase): Kalibrierung und Gewichte auf der rohen
+      Prognose. Ist die Kalibrierung aktiv und hat sie schon gelernt, steckt
+      der mittlere Verschattungsverlust in ihrem Bias – der Tageswert bleibt
+      kalibriert(roh), die Verschattung verschiebt nur Energie zwischen den
+      Stunden. Sonst (Gating aus oder noch keine Historie) Tageswert =
+      roh × ratio.
     """
 
     def __init__(
@@ -167,6 +198,10 @@ class FusionEngine:
         exclusion_factor: float = calc.DEFAULT_EXCLUSION_FACTOR,
         min_eval_days: int = calc.DEFAULT_MIN_EVAL_DAYS,
         calibration_state: Optional[Dict[str, bool]] = None,
+        shading_cells: Optional[calc.ShadingCells] = None,
+        shading_apply: bool = False,
+        horizon_sources: Iterable[str] = (),
+        location: Optional[Tuple[float, float]] = None,
     ) -> None:
         self._history = history  # mutated in-place by coordinator
         # Letzte Gating-Entscheidung je Quelle (für die Hysterese); wird hier
@@ -174,11 +209,139 @@ class FusionEngine:
         self._calibration_state = calibration_state if calibration_state is not None else {}
         self._exclusion_factor = exclusion_factor
         self._min_eval_days = min_eval_days
-        # Cache: {source_id: (knots_x, knots_y, fitted_month)}
-        self._iso_cache: Dict[str, Tuple[List[float], List[float], int]] = {}
+        # Cache: {source_id: (knots_x, knots_y, fitted_month, corrected_mode)}
+        self._iso_cache: Dict[str, Tuple[List[float], List[float], int, bool]] = {}
         # Gewichte hängen nur von Historie, Quellen und Stichtag ab; pro Update
         # werden sie mehrfach abgefragt, die Rückrechnung soll nur einmal laufen.
         self._weight_cache: Optional[Tuple[tuple, Dict[str, Dict]]] = None
+        self._shading_cells: calc.ShadingCells = shading_cells or {}
+        self._shading_apply = shading_apply
+        self._horizon_sources = set(horizon_sources)
+        self._location = location
+        # Letztes Verhältnis korrigiert/roh je Datum und Quelle (Diagnose)
+        self.last_shading_ratios: Dict[str, Dict[str, float]] = {}
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Shading
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def set_shading_cells(self, cells: calc.ShadingCells) -> None:
+        """Neue Verschattungskarte übernehmen (nach einem Lernlauf)."""
+        self._shading_cells = cells or {}
+        self._iso_cache.clear()
+        self._weight_cache = None
+
+    @property
+    def shading_active(self) -> bool:
+        return (
+            self._shading_apply
+            and self._location is not None
+            and any(c.get("learned") for c in self._shading_cells.values())
+        )
+
+    def slot_factors(self, slots: Iterable[str]) -> Dict[str, float]:
+        """Verschattungsfaktoren je Stundenslot ("YYYY-MM-DDTHH:00", lokal); nur Werte ≠ 1."""
+        if not self.shading_active:
+            return {}
+        lat, lon = self._location
+        tz = dt_util.get_default_time_zone()
+        out: Dict[str, float] = {}
+        for slot in slots:
+            try:
+                start = datetime.fromisoformat(slot).replace(tzinfo=tz)
+            except ValueError:
+                continue
+            factor = calc.shading_slot_factor(
+                self._shading_cells,
+                calc.slot_sun_positions(
+                    start, lat, lon, quarters=calc.SHADING_APPLY_QUARTERS
+                ),
+            )
+            if factor != 1.0:
+                out[slot] = factor
+        return out
+
+    def shading_ratios(
+        self, readings: List[SourceReading], target_date: date
+    ) -> Dict[str, float]:
+        """Je Quelle korrigierte / rohe Tagesenergie für ``target_date`` (1,0 ohne Korrektur).
+
+        Quellen ohne Stundenwerte für den Tag bekommen das mittlere Verhältnis
+        der übrigen korrigierten Quellen.
+        """
+        is_today = target_date == dt_util.now().date()
+        date_str = target_date.isoformat()
+        shapes = {
+            r.source_id: {
+                s: wh
+                for s, wh in (r.hourly_today if is_today else r.hourly_tomorrow).items()
+                if s.startswith(date_str)
+            }
+            for r in readings
+        }
+        return self._ratios_for_shapes(shapes, self.slot_factors(
+            {slot for sh in shapes.values() for slot in sh}
+        ))
+
+    def _ratios_for_shapes(
+        self, shapes: Dict[str, HourlyWh], factors: Dict[str, float]
+    ) -> Dict[str, float]:
+        if not factors:
+            return {sid: 1.0 for sid in shapes}
+        ratios: Dict[str, Optional[float]] = {}
+        for sid, shape in shapes.items():
+            if sid in self._horizon_sources:
+                ratios[sid] = 1.0
+            elif shape:
+                ratios[sid] = _shading_ratio(shape, factors)
+            else:
+                ratios[sid] = None
+        known = [
+            v for sid, v in ratios.items()
+            if v is not None and sid not in self._horizon_sources
+        ]
+        estimate = sum(known) / len(known) if known else 1.0
+        return {sid: (estimate if v is None else v) for sid, v in ratios.items()}
+
+    def _corrected_mode(self, source_id: str) -> bool:
+        """Kalibrierung/Gewichtung dieser Quelle auf der korrigierten Historie?"""
+        if not self._shading_apply:
+            return False
+        recent = _recent_records(self._history, source_id)
+        n = sum(1 for r in recent if "forecast_corrected_kwh" in r)
+        return n >= self._min_eval_days
+
+    def _source_history(self, source_id: str) -> List[HistoryRecord]:
+        """Historie, auf der Kalibrierung und Gewichtung dieser Quelle laufen.
+
+        Im Modus „roh“ die unveränderte Historie; im Modus „korrigiert“ nur
+        Tage mit korrigierter Morgenprognose, die dann als forecast_kwh gilt.
+        """
+        if not self._corrected_mode(source_id):
+            return self._history
+        return [
+            {**r, "forecast_kwh": r["forecast_corrected_kwh"]}
+            for r in self._history
+            if r["source"] == source_id and "forecast_corrected_kwh" in r
+        ]
+
+    def _source_daily_target(
+        self, source_id: str, raw_kwh: float, ratio: float, month: int, calibrate: bool
+    ) -> float:
+        """Tageswert der Quelle nach Verschattung und Kalibrierung (siehe Klassendoku)."""
+        if self._corrected_mode(source_id):
+            return self._fusion_kwh(source_id, raw_kwh * ratio, month, calibrate)
+        if calibrate and self._has_calibration_data(source_id, month):
+            return self._fusion_kwh(source_id, raw_kwh, month, True)
+        return self._fusion_kwh(source_id, raw_kwh * ratio, month, calibrate)
+
+    def _has_calibration_data(self, source_id: str, month: int) -> bool:
+        """Ob _calibrate eine gelernte Korrektur anwendet (sonst ist sie die Identität)."""
+        history = self._source_history(source_id)
+        return (
+            len(_seasonal_records(history, source_id, month)) >= MIN_ISO_POINTS
+            or len(_recent_records(history, source_id)) >= MIN_HISTORY_DAYS
+        )
 
     # ──────────────────────────────────────────────────────────────────────────
     # Public
@@ -210,47 +373,64 @@ class FusionEngine:
         use_cal = {sid: info["calibration_active"] for sid, info in details.items()}
 
         date_str = target_date.isoformat()
-        slots: Dict[str, Dict[str, float]] = {}
-
-        for reading in readings:
-            raw_daily = (
-                reading.today_kwh if target_date == _today else reading.tomorrow_kwh
-            )
-            calibrated_daily = self._fusion_kwh(
-                reading.source_id, raw_daily, current_month, use_cal[reading.source_id]
-            )
-            hourly_scale = (calibrated_daily / raw_daily) if raw_daily > 0 else 1.0
-
-            hourly = (
-                reading.hourly_today if target_date == _today else reading.hourly_tomorrow
-            )
-            for slot, wh in hourly.items():
-                if not slot.startswith(date_str):
-                    continue
-                slots.setdefault(slot, {})[reading.source_id] = max(0.0, wh * hourly_scale)
-
-        if not slots:
+        is_today = target_date == _today
+        raw_by_sid = {
+            r.source_id: (r.today_kwh if is_today else r.tomorrow_kwh) for r in readings
+        }
+        day_hourly = {
+            r.source_id: {
+                slot: wh
+                for slot, wh in (r.hourly_today if is_today else r.hourly_tomorrow).items()
+                if slot.startswith(date_str)
+            }
+            for r in readings
+        }
+        use_profile = not any(day_hourly.values())
+        if use_profile:
             _LOGGER.debug(
                 "No hourly data for %s – using calibrated daily totals as fallback", date_str
             )
             # Build a solar-shape profile from today's data (or generic bell curve)
             # and distribute the daily total across 24 hourly slots.
             profile = _build_solar_profile(readings, _today)
+            # Rewrite the date part from today to target_date
+            shape = {
+                slot.replace(_today.isoformat(), date_str): fraction
+                for slot, fraction in profile.items()
+            }
+            shapes = {sid: shape for sid in raw_by_sid}
+        else:
+            shapes = day_hourly
 
-            for reading in readings:
-                raw_kwh = (
-                    reading.today_kwh if target_date == _today else reading.tomorrow_kwh
-                )
-                calibrated_kwh = self._fusion_kwh(
-                    reading.source_id, raw_kwh, current_month, use_cal[reading.source_id]
-                )
-                target_wh = max(0.0, calibrated_kwh * 1000.0)
-                for slot, fraction in profile.items():
-                    # Rewrite the date part from today to target_date
-                    day_slot = slot.replace(_today.isoformat(), date_str)
-                    slots.setdefault(day_slot, {})[reading.source_id] = round(
-                        target_wh * fraction, 1
+        # Verschattung: Faktor je Slot, Verhältnis korrigiert/roh je Quelle
+        factors = self.slot_factors({slot for sh in shapes.values() for slot in sh})
+        ratios = self._ratios_for_shapes(shapes, factors)
+        self.last_shading_ratios[date_str] = ratios
+        targets = {
+            sid: self._source_daily_target(
+                sid, raw_by_sid[sid], ratios[sid], current_month, use_cal[sid]
+            )
+            for sid in raw_by_sid
+        }
+
+        slots: Dict[str, Dict[str, float]] = {}
+        for reading in readings:
+            sid = reading.source_id
+            f = {} if sid in self._horizon_sources else factors
+            ratio = ratios[sid]
+            if use_profile:
+                target_wh = max(0.0, targets[sid] * 1000.0)
+                for slot, fraction in shapes[sid].items():
+                    slots.setdefault(slot, {})[sid] = round(
+                        target_wh * fraction * f.get(slot, 1.0) / ratio, 1
                     )
+                continue
+            denom = raw_by_sid[sid] * ratio
+            hourly_scale = (targets[sid] / denom) if denom > 0 else 1.0
+            for slot, wh in day_hourly[sid].items():
+                slots.setdefault(slot, {})[sid] = max(
+                    0.0, wh * f.get(slot, 1.0) * hourly_scale
+                )
 
         fused: HourlyWh = {}
         for slot, source_vals in slots.items():
@@ -263,15 +443,10 @@ class FusionEngine:
                 1,
             )
 
+        # Schritt 7: Zielsumme aus den Tageswerten nach Verschattung, damit die
+        # Skalierung die stündliche Abschwächung nicht wieder aufhebt.
         target_wh = sum(
-            self._fusion_kwh(
-                r.source_id,
-                r.today_kwh if target_date == _today else r.tomorrow_kwh,
-                current_month,
-                use_cal[r.source_id],
-            )
-            * weights.get(r.source_id, 0.0)
-            * 1000.0
+            targets[r.source_id] * weights.get(r.source_id, 0.0) * 1000.0
             for r in readings
         )
         fused_total = sum(fused.values())
@@ -279,11 +454,7 @@ class FusionEngine:
             scale = target_wh / fused_total
             fused = {slot: round(wh * scale, 1) for slot, wh in fused.items()}
 
-        raw_daily = {
-            r.source_id: (r.today_kwh if target_date == _today else r.tomorrow_kwh)
-            for r in readings
-        }
-        uncertainty_pct = self._compute_uncertainty(raw_daily, weights, fused)
+        uncertainty_pct = self._compute_uncertainty(raw_by_sid, weights, fused)
         return fused, uncertainty_pct, weights
 
     def record_actual(
@@ -291,10 +462,14 @@ class FusionEngine:
         target_date: date,
         actual_kwh: float,
         readings: List[SourceReading],
+        corrected: Optional[Dict[str, float]] = None,
     ) -> None:
         """
         Store actual production alongside each source's daily total for target_date.
         Invalidates the isotonic cache for the affected month.
+
+        ``corrected``: Morgenprognose je Quelle nach Verschattungskorrektur;
+        wird als ``forecast_corrected_kwh`` mitgespeichert.
         """
         date_str = target_date.isoformat()
         month = target_date.month
@@ -306,12 +481,15 @@ class FusionEngine:
             # the morning snapshot where today_kwh holds the forecast for target_date
             # and tomorrow_kwh is always 0.0. Using today_kwh is always correct here.
             forecast_kwh = reading.today_kwh
-            self._history.append({
+            record = {
                 "date": date_str,
                 "source": reading.source_id,
                 "forecast_kwh": round(float(forecast_kwh), 3),
                 "actual_kwh": round(float(actual_kwh), 3),
-            })
+            }
+            if corrected and reading.source_id in corrected:
+                record["forecast_corrected_kwh"] = round(float(corrected[reading.source_id]), 3)
+            self._history.append(record)
 
         # Invalidate isotonic cache for sources whose seasonal window includes this month
         for sid in {r.source_id for r in readings}:
@@ -411,12 +589,13 @@ class FusionEngine:
         2. Linear multiplicative bias (recent, >= MIN_HISTORY_DAYS records)
         3. Identity (no correction)
         """
-        seasonal = _seasonal_records(self._history, source_id, month)
+        history = self._source_history(source_id)
+        seasonal = _seasonal_records(history, source_id, month)
 
         if len(seasonal) >= MIN_ISO_POINTS:
             return self._calibrate_isotonic(source_id, raw_kwh, seasonal, month)
 
-        recent = _recent_records(self._history, source_id)
+        recent = _recent_records(history, source_id)
         if len(recent) >= MIN_HISTORY_DAYS:
             return self._calibrate_linear(raw_kwh, recent)
 
@@ -431,17 +610,18 @@ class FusionEngine:
     ) -> float:
         """Apply isotonic regression calibration, using a per-source cache."""
         cached = self._iso_cache.get(source_id)
-        if cached is None or cached[2] != month:
+        corrected = self._corrected_mode(source_id)
+        if cached is None or cached[2] != month or cached[3] != corrected:
             xs = [r["forecast_kwh"] for r in records]
             ys = [r["actual_kwh"] for r in records]
             knots_x, knots_y = calc.isotonic_fit(xs, ys)
-            self._iso_cache[source_id] = (knots_x, knots_y, month)
+            self._iso_cache[source_id] = (knots_x, knots_y, month, corrected)
             _LOGGER.debug(
                 "Fitted isotonic regression for %s month=%d: %d knots from %d points",
                 source_id, month, len(knots_x), len(records),
             )
         else:
-            knots_x, knots_y, _ = cached
+            knots_x, knots_y, _, _ = cached
 
         return max(0.0, calc.isotonic_predict(knots_x, knots_y, raw_kwh))
 
@@ -469,7 +649,7 @@ class FusionEngine:
         wäre zu optimistisch, weil die isotonische Kurve auf genau diesen Punkten
         angepasst wurde.
         """
-        prior = [r for r in self._history if r["date"] < as_of.isoformat()]
+        prior = [r for r in self._source_history(source_id) if r["date"] < as_of.isoformat()]
 
         seasonal = _seasonal_records(prior, source_id, as_of.month)
         if len(seasonal) >= MIN_ISO_POINTS:
@@ -509,9 +689,11 @@ class FusionEngine:
             today,
             tuple(source_ids),
             tuple(
-                (r["date"], r["source"], r["forecast_kwh"], r["actual_kwh"])
+                (r["date"], r["source"], r["forecast_kwh"], r["actual_kwh"],
+                 r.get("forecast_corrected_kwh"))
                 for r in self._history
             ),
+            tuple(self._corrected_mode(sid) for sid in source_ids),
         )
         if self._weight_cache is not None and self._weight_cache[0] == key:
             return self._weight_cache[1]
@@ -522,7 +704,7 @@ class FusionEngine:
         cal_map: Dict[str, Optional[float]] = {}
         active_map: Dict[str, bool] = {}
         for sid in source_ids:
-            records = _recent_records(self._history, sid, today=today)
+            records = _recent_records(self._source_history(sid), sid, today=today)
             raw_map[sid] = calc.rmse([r["forecast_kwh"] - r["actual_kwh"] for r in records])
             cal_map[sid] = calc.rmse([
                 self._calibrate_as_of(sid, r["forecast_kwh"], date.fromisoformat(r["date"]))
@@ -556,6 +738,7 @@ class FusionEngine:
             info["rmse_raw"] = _round_or_none(raw_map[sid])
             info["rmse_calibrated"] = _round_or_none(cal_map[sid])
             info["days_evaluated"] = days_map[sid]
+            info["shading_corrected_history"] = self._corrected_mode(sid)
             if info["excluded"]:
                 _LOGGER.debug(
                     "%s ausgeschlossen: %s",

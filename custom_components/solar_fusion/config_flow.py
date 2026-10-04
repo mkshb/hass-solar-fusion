@@ -14,12 +14,17 @@ from . import calc
 from .const import (
     ALL_SOURCES,
     CONF_EXCLUSION_FACTOR,
+    CONF_HORIZON_SOURCES,
     CONF_MIN_EVAL_DAYS,
     CONF_INSTANCE_NAME,
     CONF_PV_ENTITY,
     CONF_PV_ENTITIES,
+    CONF_SHADING_APPLY,
+    CONF_SHADING_LEARN,
     CONF_SOURCES,
     CONF_UPDATE_INTERVAL,
+    DEFAULT_SHADING_APPLY,
+    DEFAULT_SHADING_LEARN,
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     SOURCE_NAMES,
@@ -316,6 +321,11 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
             self._data[CONF_UPDATE_INTERVAL] = user_input[CONF_UPDATE_INTERVAL]
             self._data[CONF_EXCLUSION_FACTOR] = float(user_input[CONF_EXCLUSION_FACTOR])
             self._data[CONF_MIN_EVAL_DAYS] = int(user_input[CONF_MIN_EVAL_DAYS])
+            self._data[CONF_SHADING_LEARN] = bool(user_input[CONF_SHADING_LEARN])
+            self._data[CONF_SHADING_APPLY] = bool(user_input[CONF_SHADING_APPLY])
+            self._data[CONF_HORIZON_SOURCES] = [
+                s for s in user_input.get(CONF_HORIZON_SOURCES, []) if s in self._selected
+            ]
 
             # Persist everything back to config entry data
             new_name = self._data.get(CONF_INSTANCE_NAME, "")
@@ -354,6 +364,29 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
                         ),
                     ): selector.NumberSelector(
                         selector.NumberSelectorConfig(min=3, max=14, step=1, mode="box")
+                    ),
+                    vol.Optional(
+                        CONF_SHADING_LEARN,
+                        default=self._current.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_SHADING_APPLY,
+                        default=self._current.get(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY),
+                    ): selector.BooleanSelector(),
+                    vol.Optional(
+                        CONF_HORIZON_SOURCES,
+                        default=[
+                            s for s in self._current.get(CONF_HORIZON_SOURCES, [])
+                            if s in self._selected
+                        ],
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[
+                                selector.SelectOptionDict(value=s, label=SOURCE_NAMES[s])
+                                for s in self._selected
+                            ],
+                            multiple=True,
+                        )
                     ),
                 }
             ),

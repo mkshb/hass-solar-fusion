@@ -1,0 +1,2 @@
+# Integrationstests mit Home Assistant (tests_ha/), Python 3.14
+pytest-homeassistant-custom-component==0.13.367
