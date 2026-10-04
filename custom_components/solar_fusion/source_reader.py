@@ -15,6 +15,7 @@ Each reader returns a SourceReading dataclass or raises SourceUnavailable.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass, field
 from datetime import date, datetime
 from typing import Dict, List, Optional
@@ -46,6 +47,9 @@ _LOGGER = logging.getLogger(__name__)
 
 # Mapping: ISO-hour-string → Wh  (e.g. "2024-07-15T08:00" → 1200.0)
 HourlyWh = Dict[str, float]
+
+# Numerischer Suffix, den HA bei Namenskollisionen anhängt ("…_today_2")
+_OM_ID_SUFFIX = re.compile(r"_\d+$")
 
 
 class SourceUnavailable(Exception):
@@ -174,10 +178,14 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
     (sensor.energy_production_today). Resolving via the registry ensures we
     read the correct entity and never collide with Forecast.Solar.
 
-    The match is intentionally strict: only entities whose ID contains
-    "energy_production_today" / "energy_production_tomorrow" are accepted.
-    This avoids false matches on other Open-Meteo sensors that also contain
-    "_today" in their name, e.g. "power_highest_peak_time_today".
+    Matching uses the registry's ``translation_key`` (``energy_production_today``
+    / ``energy_production_tomorrow``), which does not depend on the entity ID.
+    When Forecast.Solar is installed first, Open-Meteo's entity gets a suffix
+    (``sensor.energy_production_today_2``) and an ID-based match would miss it
+    and fall back to Forecast.Solar's entity. Entries without a translation key
+    (older versions) are matched by an ID ending in "energy_production_today",
+    optionally followed by a numeric suffix. This avoids false matches on other
+    Open-Meteo sensors such as "power_highest_peak_time_today".
 
     Falls back to hardcoded OPEN_METEO_TODAY/TOMORROW constants if no matching
     entity is found in the registry.
@@ -191,11 +199,11 @@ def _find_open_meteo_entities(hass: HomeAssistant) -> tuple[Optional[str], Optio
     for entry in registry.entities.values():
         if entry.platform != "open_meteo_solar_forecast" or entry.domain != "sensor":
             continue
-        eid_lower = entry.entity_id.lower()
-        if eid_lower.endswith("energy_production_today"):
-            today_id = entry.entity_id
-        elif eid_lower.endswith("energy_production_tomorrow"):
-            tomorrow_id = entry.entity_id
+        kind = entry.translation_key or _OM_ID_SUFFIX.sub("", entry.entity_id.lower())
+        if kind.endswith("energy_production_today"):
+            today_id = today_id or entry.entity_id
+        elif kind.endswith("energy_production_tomorrow"):
+            tomorrow_id = tomorrow_id or entry.entity_id
         if today_id and tomorrow_id:
             break
 

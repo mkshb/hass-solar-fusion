@@ -27,6 +27,45 @@ async def test_detects_sources_with_valid_states(hass):
     assert detect_available_sources(hass) == ["forecast_solar", "solcast"]
 
 
+async def test_open_meteo_and_forecast_solar_share_the_default_name(berlin):
+    hass = berlin
+    # Forecast.Solar bekommt den Standardnamen, Open-Meteo den mit Suffix
+    fs_today = _reg(hass, "forecast_solar", "energy_production_today", 20.0)
+    fs_tom = _reg(hass, "forecast_solar", "energy_production_tomorrow", 21.0)
+    om_today = er.async_get(hass).async_get_or_create(
+        "sensor", "open_meteo_solar_forecast", "om_today",
+        suggested_object_id="energy_production_today",
+        translation_key="energy_production_today").entity_id
+    om_tom = er.async_get(hass).async_get_or_create(
+        "sensor", "open_meteo_solar_forecast", "om_tomorrow",
+        suggested_object_id="energy_production_tomorrow",
+        translation_key="energy_production_tomorrow").entity_id
+    assert om_today == "sensor.energy_production_today_2"
+    hass.states.async_set(om_today, 38.6, {**KWH, "wh_period": {
+        "2026-10-04T12:00:00+02:00": 5000}})
+    hass.states.async_set(om_tom, 44.0, KWH)
+    default_map = {"today": fs_today, "tomorrow": fs_tom}   # Standard aus dem Config-Flow
+
+    om = read_source(hass, "open_meteo_solar_forecast", default_map)
+    fs = read_source(hass, "forecast_solar", default_map)
+    assert (om.today_kwh, om.tomorrow_kwh) == (38.6, 44.0)
+    assert om.hourly_today == {"2026-10-04T12:00": 5000.0}
+    assert (fs.today_kwh, fs.tomorrow_kwh) == (20.0, 21.0)
+    assert today_entity_id(hass, "open_meteo_solar_forecast", default_map) == om_today
+
+
+async def test_open_meteo_suffix_without_translation_key(hass):
+    # Ältere Registry-Einträge ohne translation_key: Suffix "_2" im Entity-ID
+    _reg(hass, "forecast_solar", "energy_production_today", 20.0)
+    om_today = er.async_get(hass).async_get_or_create(
+        "sensor", "open_meteo_solar_forecast", "om_today",
+        suggested_object_id="energy_production_today").entity_id
+    _reg(hass, "open_meteo_solar_forecast", "energy_production_today_remaining", 0.4)
+    assert om_today == "sensor.energy_production_today_2"
+    hass.states.async_set(om_today, 38.6, KWH)
+    assert today_entity_id(hass, "open_meteo_solar_forecast", {}) == om_today
+
+
 async def test_open_meteo_explicit_override_wins(hass):
     _reg(hass, "open_meteo_solar_forecast", "energy_production_today", 38.6)
     _reg(hass, "open_meteo_solar_forecast", "energy_production_tomorrow", 44.0)
