@@ -135,6 +135,10 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
       sensor.energy_production_today      → state = kWh today
       sensor.energy_production_tomorrow   → state = kWh tomorrow
       attribute "wh_hours" on today/tomorrow  → {ISO-ts: Wh} hourly breakdown
+                                                 (Schlüssel = Periodenende)
+
+    Die Core-Integration setzt dieses Attribut nicht; Stundenwerte gibt es nur,
+    wenn eine eigene Entität es bereitstellt.
     """
     today_id = entity_map.get("today", FORECAST_SOLAR_TODAY)
     tomorrow_id = entity_map.get("tomorrow", FORECAST_SOLAR_TOMORROW)
@@ -145,8 +149,12 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
     today_kwh = _parse_float(today_state.state, today_id)
     tomorrow_kwh = _parse_float(tomorrow_state.state, tomorrow_id)
 
-    hourly_today = _extract_wh_hours(today_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}))
-    hourly_tomorrow = _extract_wh_hours(tomorrow_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}))
+    hourly_today = _extract_wh_hours(
+        today_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True
+    )
+    hourly_tomorrow = _extract_wh_hours(
+        tomorrow_state.attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True
+    )
 
     return SourceReading(
         source_id=SOURCE_FORECAST_SOLAR,
@@ -376,19 +384,37 @@ def _extract_solcast_hourly(slots: list) -> HourlyWh:
     return result
 
 
-def _extract_wh_hours(raw: dict) -> HourlyWh:
+def _extract_wh_hours(raw: dict, period_end: bool = False) -> HourlyWh:
     """
-    Convert the "wh_hours" attribute dict to a normalised HourlyWh dict.
+    Convert an hourly {timestamp: Wh} attribute dict to a normalised HourlyWh dict.
     Keys may be ISO strings or datetime objects; values are Wh (float).
+
+    ``period_end``: der Schlüssel bezeichnet das Ende der Periode (Forecast.Solar).
+    Der Wert gehört dann zu der Stunde, die kurz vor dem Schlüssel liegt
+    (08:00 → Slot 07:00, Sonnenaufgang 07:13 → Slot 07:00). Mehrere Perioden
+    in derselben Stunde werden summiert.
     """
     result: HourlyWh = {}
     for k, v in raw.items():
-        ts = _normalise_ts(str(k))
         try:
-            result[ts] = float(v)
+            wh = float(v)
         except (ValueError, TypeError):
-            pass
+            continue
+        if period_end:
+            ts = _normalise_ts(_shift_back(k))
+            result[ts] = result.get(ts, 0.0) + wh
+        else:
+            result[_normalise_ts(str(k))] = wh
     return result
+
+
+def _shift_back(ts_raw):
+    """Zeitstempel um eine Sekunde zurück (Periodenende → letzte Sekunde der Periode)."""
+    from datetime import timedelta
+    if isinstance(ts_raw, datetime):
+        return ts_raw - timedelta(seconds=1)
+    dt = dt_util.parse_datetime(str(ts_raw).replace(" ", "T"))
+    return dt - timedelta(seconds=1) if dt is not None else str(ts_raw)
 
 
 def _normalise_ts(ts_raw) -> str:

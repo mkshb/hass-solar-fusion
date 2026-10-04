@@ -48,11 +48,13 @@ SOURCE_DOCS = {
 
 # Forecast.Solar (built-in HA integration, domain: forecast_solar)
 # Entities: sensor.energy_production_today / _tomorrow
-# Hourly attribute: "watts" dict {ISO-hour: W} on sensor.power_production_now
-# The integration also exposes "wh_hours" attribute on the today/tomorrow sensors.
+# Die Sensoren der Core-Integration haben keine Stundenattribute; "wh_hours"
+# gibt es nur über die Energie-Plattform. Liefert eine (z. B. per Template
+# nachgebaute) Entität trotzdem "wh_hours", bezeichnet der Schlüssel wie in
+# der Forecast.Solar-API das ENDE der Periode ("value is always for the period
+# from last timestamp to the timestamp in the key", doc.forecast.solar).
 FORECAST_SOLAR_TODAY = "sensor.energy_production_today"
 FORECAST_SOLAR_TOMORROW = "sensor.energy_production_tomorrow"
-# Attribute on today/tomorrow sensors that holds hourly breakdown {ts: Wh}
 FORECAST_SOLAR_ATTR_HOURLY = "wh_hours"
 
 # Open-Meteo Solar Forecast (HACS, domain: open_meteo_solar_forecast)
