@@ -57,9 +57,14 @@ FORECAST_SOLAR_ATTR_HOURLY = "wh_hours"
 
 # Open-Meteo Solar Forecast (HACS, domain: open_meteo_solar_forecast)
 # Same sensor naming as forecast_solar (it was forked from it)
+# Stundenwerte stehen im Attribut "wh_period" (Schlüssel = BEGINN der Stunde,
+# siehe open_meteo_solar_forecast: Viertelstunden [t, t+15 min) werden auf die
+# volle Stunde abgerundet). "wh_hours" gibt es dort nur in der Energie-Plattform.
 OPEN_METEO_TODAY = "sensor.energy_production_today"
 OPEN_METEO_TOMORROW = "sensor.energy_production_tomorrow"
-OPEN_METEO_ATTR_HOURLY = "wh_hours"
+OPEN_METEO_ATTR_HOURLY = "wh_period"
+OPEN_METEO_ATTR_HOURLY_LEGACY = "wh_hours"
+
 
 # Solcast PV Forecast (HACS, domain: solcast_solar)
 # Sensors: sensor.solcast_pv_forecast_forecast_today / _forecast_tomorrow

@@ -27,6 +27,7 @@ from .const import (
     FORECAST_SOLAR_TODAY,
     FORECAST_SOLAR_TOMORROW,
     OPEN_METEO_ATTR_HOURLY,
+    OPEN_METEO_ATTR_HOURLY_LEGACY,
     OPEN_METEO_TODAY,
     OPEN_METEO_TOMORROW,
     SOLCAST_ATTR_DETAILED_TODAY,
@@ -231,8 +232,8 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
         today_id, today_state.state, tomorrow_id, tomorrow_state.state,
     )
 
-    hourly_today = _extract_wh_hours(today_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
-    hourly_tomorrow = _extract_wh_hours(tomorrow_state.attributes.get(OPEN_METEO_ATTR_HOURLY, {}))
+    hourly_today = _extract_wh_hours(_open_meteo_hourly_attr(today_state))
+    hourly_tomorrow = _extract_wh_hours(_open_meteo_hourly_attr(tomorrow_state))
 
     return SourceReading(
         source_id=SOURCE_OPEN_METEO,
@@ -241,6 +242,12 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
         hourly_today=hourly_today,
         hourly_tomorrow=hourly_tomorrow,
     )
+
+
+def _open_meteo_hourly_attr(state) -> dict:
+    """Stundenwerte einer Open-Meteo-Entität ("wh_period", Schlüssel = Stundenbeginn)."""
+    attrs = state.attributes
+    return attrs.get(OPEN_METEO_ATTR_HOURLY) or attrs.get(OPEN_METEO_ATTR_HOURLY_LEGACY) or {}
 
 
 def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional[str]]:

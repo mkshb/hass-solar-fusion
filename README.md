@@ -379,11 +379,13 @@ A dedicated Lovelace card for Solar Fusion is maintained in a separate repositor
 
 Each integration exposes hourly data in a different way. Solar Fusion reads them as follows:
 
-| Source | Attribute | Location |
-|--------|-----------|----------|
-| Forecast.Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
-| Open-Meteo Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | On both today and tomorrow sensor |
-| Solcast | `detailedHourly` (list `[{period_start, pv_estimate}]`) | On both today and tomorrow sensor |
+| Source | Attribute | Timestamp means | Location |
+|--------|-----------|-----------------|----------|
+| Forecast.Solar | `wh_hours` (dict `{ISO-ts: Wh}`) | **end** of the period (Forecast.Solar API) | Not set by the HA core integration – only used if a custom entity provides it |
+| Open-Meteo Solar | `wh_period` (dict `{ISO-ts: Wh}`), legacy `wh_hours` | start of the hour | On both today and tomorrow sensor |
+| Solcast | `detailedHourly` (list `[{period_start, pv_estimate}]`) | start of the hour | On both today and tomorrow sensor |
+
+All values are stored under the local hour in which the period **starts**. Up to v0.2.3 Solar Fusion looked for `wh_hours` on Open-Meteo, which the sensor does not have, so Open-Meteo's hourly shape was never used; the fused hourly forecast followed Solcast's shape alone.
 
 When no hourly data is available for a day (source provides daily totals only), Solar Fusion builds a synthetic hourly profile: it averages the available `hourly_today` profiles from all sources, or falls back to a Gaussian bell curve peaking at 13:00 with σ = 3 h.
 
