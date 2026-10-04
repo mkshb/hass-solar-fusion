@@ -47,7 +47,15 @@ async def async_get_config_entry_diagnostics(
             "records": coordinator.history,
         },
         "morning_snapshots": {
-            "snapshot_count": len(coordinator.morning_snapshots),
-            "snapshots": coordinator.morning_snapshots,
+            "snapshot_count": len(coordinator.morning_snapshots_full),
+            "snapshots": coordinator.morning_snapshots_full,
+        },
+        "shading": {
+            **coordinator.shading_settings,
+            "used_days": coordinator.shading.get("used_days", 0),
+            "last_run": coordinator.shading.get("last_run"),
+            "shading_ratios": data.get("shading_ratios", {}),
+            "cells": coordinator.shading.get("cells", {}),
+            "days": coordinator.shading.get("days", {}),
         },
     }
