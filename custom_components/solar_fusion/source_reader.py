@@ -17,7 +17,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from homeassistant.core import HomeAssistant

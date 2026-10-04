@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 import voluptuous as vol
 from homeassistant import config_entries
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
@@ -28,7 +28,6 @@ from .const import (
     DEFAULT_UPDATE_INTERVAL,
     DOMAIN,
     SOURCE_NAMES,
-    SOURCE_DOCS,
     FORECAST_SOLAR_TODAY,
     FORECAST_SOLAR_TOMORROW,
     OPEN_METEO_TODAY,

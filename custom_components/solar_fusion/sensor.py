@@ -33,7 +33,6 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from . import calc
 from .const import (
-    ALL_SOURCES,
     CONF_INSTANCE_NAME,
     CONF_PV_ENTITIES,
     CONF_PV_ENTITY,
