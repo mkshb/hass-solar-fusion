@@ -449,3 +449,42 @@ def _normalise_ts(ts_raw) -> str:
         except ValueError:
             continue
     return ts[:16] if len(ts) >= 16 else ts
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Rekonstruktion aus der Recorder-Historie (rückwirkendes Lernen)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def today_entity_id(hass: HomeAssistant, source_id: str, entity_map: Dict[str, str]) -> Optional[str]:
+    """Entität mit der Heute-Prognose einer Quelle (gleiche Auflösung wie beim Lesen)."""
+    if source_id == SOURCE_FORECAST_SOLAR:
+        return entity_map.get("today", FORECAST_SOLAR_TODAY)
+    if source_id == SOURCE_OPEN_METEO:
+        today_id, _ = _find_open_meteo_entities(hass)
+        override = entity_map.get("today", "")
+        return override if override and override != OPEN_METEO_TODAY else today_id
+    if source_id == SOURCE_SOLCAST:
+        return entity_map.get("today") or _find_solcast_entities(hass)[0]
+    return None
+
+
+def hourly_from_attributes(source_id: str, attributes) -> HourlyWh:
+    """Stundenwerte einer Quelle aus den Attributen ihrer Heute-Entität.
+
+    Funktioniert nur, wenn der Recorder die Attribute speichert: Open-Meteo
+    ("wh_period") ja, Solcast ("detailedHourly") nein – die Integration nimmt
+    es von der Aufzeichnung aus.
+    """
+    if source_id == SOURCE_FORECAST_SOLAR:
+        return _extract_wh_hours(attributes.get(FORECAST_SOLAR_ATTR_HOURLY, {}), period_end=True)
+    if source_id == SOURCE_OPEN_METEO:
+        return _extract_wh_hours(_open_meteo_hourly_attr(_AttrState(attributes)))
+    if source_id == SOURCE_SOLCAST:
+        return _extract_solcast_hourly(attributes.get(SOLCAST_ATTR_DETAILED_TODAY, []))
+    return {}
+
+
+class _AttrState:
+    """Adapter: _open_meteo_hourly_attr erwartet ein Objekt mit .attributes."""
+
+    def __init__(self, attributes) -> None:
+        self.attributes = attributes

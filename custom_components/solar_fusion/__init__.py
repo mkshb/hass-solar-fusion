@@ -7,7 +7,7 @@ from datetime import date
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 
@@ -71,6 +71,31 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             vol.Optional("date_from"): cv.date,
             vol.Optional("date_to"): cv.date,
         }),
+    )
+
+    async def handle_learn_shading(call: ServiceCall) -> ServiceResponse:
+        """Learn the shading map retroactively from the recorder."""
+        coordinators = {
+            entry_id: c for entry_id, c in hass.data.get(DOMAIN, {}).items()
+            if isinstance(c, SolarForecastCoordinator)
+        }
+        if not coordinators:
+            _LOGGER.warning("learn_shading: no active Solar Fusion instances found")
+            return {}
+        days = int(call.data.get("days", 10))
+        return {
+            entry_id: await coordinator.async_learn_shading(days=days)
+            for entry_id, coordinator in coordinators.items()
+        }
+
+    hass.services.async_register(
+        DOMAIN,
+        "learn_shading",
+        handle_learn_shading,
+        schema=vol.Schema({
+            vol.Optional("days", default=10): vol.All(vol.Coerce(int), vol.Range(min=1, max=60)),
+        }),
+        supports_response=SupportsResponse.OPTIONAL,
     )
 
     return True

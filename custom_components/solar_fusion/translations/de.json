@@ -89,6 +89,16 @@
     "take_snapshot": {
       "name": "Morning Snapshot aufnehmen",
       "description": "Löst den Morgen-Forecast-Snapshot (06:00 Uhr) für alle Solar Fusion Instanzen manuell aus. Nützlich nach der Ersteinrichtung oder einem späten Neustart, um das Genauigkeits-Tracking ohne Warten bis zum nächsten Morgen zu initialisieren."
+    },
+    "learn_shading": {
+      "name": "Verschattung aus dem Recorder lernen",
+      "description": "Lernt die Verschattungskarte rückwirkend: rekonstruiert die 06:00-Stundenprognose jeder Quelle aus der Recorder-Historie (nur Quellen, deren Stundenattribut aufgezeichnet wird, z. B. Open-Meteo; nicht Solcast) und den stündlichen Ertrag aus der Langzeitstatistik. Reicht nur so weit zurück, wie der Recorder Zustände aufbewahrt (Standard 10 Tage).",
+      "fields": {
+        "days": {
+          "name": "Tage",
+          "description": "Wie viele vergangene Tage rekonstruiert werden."
+        }
+      }
     }
   },
   "entity": {

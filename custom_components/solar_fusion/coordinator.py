@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 from datetime import date, datetime, timedelta
+from functools import partial
 from typing import Any, Dict, List, Optional
 
 from homeassistant.config_entries import ConfigEntry
@@ -34,12 +35,21 @@ from .const import (
 )
 from .fusion import FusionEngine
 from .migration import migrate_storage
-from .source_reader import SourceReading, SourceUnavailable, read_source
+from .source_reader import (
+    SourceReading,
+    SourceUnavailable,
+    hourly_from_attributes,
+    read_source,
+    today_entity_id,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 # Hour at which the morning forecast snapshot is taken
 _SNAPSHOT_HOUR = 6
+# Rückwirkendes Lernen: spätester Zeitpunkt (Stunde), bis zu dem ein Zustand
+# der Quellentität noch als Morgenprognose gilt
+_RETRO_LATEST_HOUR = 9
 
 
 class _SolarFusionStore(Store):
@@ -729,6 +739,88 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             sum(1 for c in cells.values() if c.get("learned")),
             sum(1 for c in cells.values() if c.get("learned") and c["factor"] < 0.9),
         )
+
+    async def async_learn_shading(self, days: int = 10) -> Dict[str, Any]:
+        """Rückwirkend lernen: Morgenprognosen der letzten ``days`` Tage aus dem Recorder.
+
+        Rekonstruiert je Tag die Stundenprognose aus dem Zustand der
+        Heute-Entität jeder Quelle um 06:00 (oder dem ersten Zustand bis
+        _RETRO_LATEST_HOUR Uhr) und liest den Stunden-Ist aus der
+        Langzeitstatistik. Geht nur, solange die Zustands-Historie reicht
+        (Standard 10 Tage) und nur für Quellen, deren Stundenattribut
+        aufgezeichnet wird (Open-Meteo ja, Solcast nein). Tage mit
+        Stunden-Snapshot werden nicht überschrieben.
+        """
+        from homeassistant.components.recorder import get_instance
+        from homeassistant.components.recorder.history import get_significant_states
+
+        entity_map: Dict[str, Dict] = self._config.get("entity_map", {})
+        entities = {
+            sid: today_entity_id(self.hass, sid, entity_map.get(sid, {}))
+            for sid in self._config.get(CONF_SOURCES, [])
+        }
+        entities = {sid: eid for sid, eid in entities.items() if eid}
+        today = dt_util.now().date()
+        summary: Dict[str, Any] = {"added": [], "skipped": {}}
+
+        for back in range(days, 0, -1):
+            day = today - timedelta(days=back)
+            d = day.isoformat()
+            existing = self._shading["days"].get(d)
+            if existing and existing.get("origin") == "snapshot":
+                summary["skipped"][d] = "snapshot"
+                continue
+            day_start = dt_util.start_of_local_day(datetime(day.year, day.month, day.day))
+            start = day_start + timedelta(hours=_SNAPSHOT_HOUR)
+            end = day_start + timedelta(hours=_RETRO_LATEST_HOUR)
+            try:
+                states = await get_instance(self.hass).async_add_executor_job(
+                    partial(
+                        get_significant_states,
+                        self.hass,
+                        start,
+                        end,
+                        list(entities.values()),
+                        include_start_time_state=True,
+                        significant_changes_only=False,
+                        minimal_response=False,
+                        no_attributes=False,
+                    )
+                )
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("learn_shading: recorder query for %s failed: %s", d, err)
+                summary["skipped"][d] = "recorder error"
+                continue
+
+            forecast: Dict[str, Dict[str, float]] = {}
+            for sid, eid in entities.items():
+                for st in states.get(eid, []):
+                    hourly = _hourly_by_hour(hourly_from_attributes(sid, st.attributes), d)
+                    if any(v > 0 for v in hourly.values()):
+                        forecast[sid] = hourly
+                        break
+            if not forecast:
+                summary["skipped"][d] = "no hourly forecast in recorder"
+                continue
+            actual = await self._async_read_hourly_actual(day)
+            if not actual:
+                summary["skipped"][d] = "no hourly statistics"
+                continue
+            self._shading["days"][d] = {
+                "actual": actual,
+                "forecast": forecast,
+                "origin": "recorder",
+            }
+            summary["added"].append({"date": d, "sources": sorted(forecast)})
+
+        await self._async_relearn_shading()
+        await self._async_save()
+        await self.async_request_refresh()
+        cells = self._shading["cells"]
+        summary["used_days"] = self._shading["used_days"]
+        summary["learned_cells"] = sum(1 for c in cells.values() if c.get("learned"))
+        _LOGGER.info("learn_shading: %s", summary)
+        return summary
 
 
 def _hourly_by_hour(hourly: Dict[str, float], date_str: str) -> Dict[str, float]:
