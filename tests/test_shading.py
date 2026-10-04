@@ -112,6 +112,19 @@ def test_factor_neutral_band():
     assert abs(calc.shading_factor(_cell(0.85), 247.5, 13.0) - 0.85) < 1e-12
 
 
+def test_slot_factor_ignores_unknown_positions():
+    # Drei Viertelstunden im gelernten Schatten, die letzte (tiefer) noch unbekannt:
+    # sie darf den Schatten nicht mit 1,0 verwässern.
+    cells = _cell(0.2)
+    positions = [(247.5, 13.0), (247.5, 13.0), (247.5, 13.0), (300.0, 2.0)]
+    assert abs(calc.shading_slot_factor(cells, positions) - 0.2) < 1e-12
+    # Keine Position bekannt → 1,0
+    assert calc.shading_slot_factor(cells, [(300.0, 2.0), (120.0, 30.0)]) == 1.0
+    # Bekannt und neutral (≥ 0,9) zählt als 1,0 mit
+    neutral = {**cells, **_cell(0.95, key="295:2")}
+    assert abs(calc.shading_slot_factor(neutral, positions) - (0.2 * 3 + 1.0) / 4) < 1e-12
+
+
 def test_factor_below_horizon_and_empty():
     assert calc.shading_factor(_cell(0.2), 247.5, -1.0) == 1.0
     assert calc.shading_factor({}, 247.5, 13.0) == 1.0

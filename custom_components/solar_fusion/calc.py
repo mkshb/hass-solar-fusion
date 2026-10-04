@@ -313,18 +313,18 @@ def _mean(block: List[float]) -> float:
 # Verschattung).
 #
 # Gelernt wird mit dem Sonnenstand zur Slotmitte, angewendet als Mittel der
-# Faktoren an den vier Viertelstunden-Mitten (SHADING_APPLY_QUARTERS).
+# Faktoren an den vier Viertelstunden-Mitten (SHADING_APPLY_QUARTERS); nur
+# Positionen mit gelernter Umgebung zählen (siehe shading_slot_factor).
 # Vergleich (synthetische Anlage, Stunden-RMSE gegenüber der Wahrheit):
 #   Karte aus einer Saison, angewendet im Folgejahr
-#     30 % klare Tage:  Mitte 80 Wh, Viertelstunden 63 Wh (ohne Korrektur 222)
-#     50 % klare Tage:  Mitte 63 Wh, Viertelstunden 55 Wh
-#    100 % klare Tage:  Mitte 46 Wh, Viertelstunden 48 Wh
+#     30 % klare Tage:  Mitte 80 Wh, Viertelstunden 54 Wh (ohne Korrektur 222)
+#     50 % klare Tage:  Mitte 63 Wh, Viertelstunden 50 Wh
+#    100 % klare Tage:  Mitte 46 Wh, Viertelstunden 45 Wh
 #   rollierend (lernen aus Vortagen), 25 % / 40 % / 70 % klare Tage:
-#     Mitte 225 / 165 / 114 Wh, Viertelstunden 197 / 168 / 134 Wh
+#     Mitte 225 / 165 / 114 Wh, Viertelstunden 153 / 132 / 120 Wh
 # Die Viertelstunden greifen entlang des Sonnenwegs auf Nachbarzellen zu und
-# überbrücken so Lücken der Karte; nur bei fast nur klaren Tagen (dichte
-# Karte) ist die Slotmitte etwas besser. Bei realistischem Wetter überwiegt
-# der Vorteil der Viertelstunden (siehe tests/test_shading.py).
+# überbrücken so Lücken der Karte; nur in der Anlaufphase mit fast nur klaren
+# Tagen ist die Slotmitte etwas besser (siehe tests/test_shading.py).
 # ──────────────────────────────────────────────────────────────────────────────
 
 SHADING_AZ_STEP = 5.0            # Zellbreite Azimut (°)
@@ -552,8 +552,14 @@ def shading_factor(cells: ShadingCells, az: float, el: float) -> float:
     werden nur gelernte Zellen, ihre Gewichte werden neu normiert. Gibt es
     keinen gelernten Nachbarn, bleibt es bei 1,0.
     """
+    factor = _learned_factor(cells, az, el)
+    return 1.0 if factor is None else factor
+
+
+def _learned_factor(cells: ShadingCells, az: float, el: float) -> Optional[float]:
+    """Wie shading_factor, aber ``None`` ohne gelernten Nachbarn (unbekannt)."""
     if not cells or el <= 0:
-        return 1.0
+        return None
     fa = (az % 360.0) / SHADING_AZ_STEP - 0.5
     fe = el / SHADING_EL_STEP - 0.5
     a0, e0 = math.floor(fa), math.floor(fe)
@@ -573,14 +579,26 @@ def shading_factor(cells: ShadingCells, az: float, el: float) -> float:
             w_sum += w
             acc += w * _effective_factor(cell)
     if w_sum <= 0:
-        return 1.0
+        return None
     return acc / w_sum
 
 
 def shading_slot_factor(
     cells: ShadingCells, positions: Sequence[Tuple[float, float]]
 ) -> float:
-    """Mittlerer Faktor über die Sonnenstände eines Slots (siehe slot_sun_positions)."""
+    """Mittlerer Faktor über die Sonnenstände eines Slots (siehe slot_sun_positions).
+
+    Gemittelt wird nur über Positionen mit gelernter Umgebung. Eine noch
+    unbekannte Position zählt nicht als 1,0: Am Rand der Karte – etwa die
+    letzte Viertelstunde, wenn die Sonne tiefer in den Schatten wandert als
+    an den bisherigen Lerntagen – würde sie den Schatten sonst verwässern.
+    Ist keine Position bekannt, bleibt es bei 1,0.
+    """
     if not cells or not positions:
         return 1.0
-    return sum(shading_factor(cells, az, el) for az, el in positions) / len(positions)
+    known = [
+        f for f in (_learned_factor(cells, az, el) for az, el in positions) if f is not None
+    ]
+    if not known:
+        return 1.0
+    return sum(known) / len(known)
