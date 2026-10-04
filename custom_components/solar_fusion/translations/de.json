@@ -70,11 +70,17 @@
           "pv_entities": "PV-Produktionssensoren (mehrere möglich)",
           "update_interval": "Aktualisierungsintervall (Minuten)",
           "exclusion_factor": "Ausschlussschwelle k (× RMSE der besten Quelle)",
-          "min_eval_days": "Mindestzahl ausgewerteter Tage für die Gewichtung"
+          "min_eval_days": "Mindestzahl ausgewerteter Tage für die Gewichtung",
+          "shading_learn": "Verschattung aus Stundenertrag lernen",
+          "shading_apply": "Gelernte Verschattung auf die Prognose anwenden",
+          "horizon_sources": "Quellen, die bereits einen Horizont enthalten"
         },
         "data_description": {
           "exclusion_factor": "Eine Quelle, deren RMSE über dem k-Fachen der besten Quelle liegt, bekommt Gewicht 0. Sie wird weiter bewertet und kommt von selbst zurück. Standard: 2,0.",
-          "min_eval_days": "Solange keine Quelle so viele ausgewertete Tage hat, werden alle Quellen gleich gewichtet. Standard: 7."
+          "min_eval_days": "Solange keine Quelle so viele ausgewertete Tage hat, werden alle Quellen gleich gewichtet. Standard: 7.",
+          "shading_learn": "Lernt je Sonnenstand (Azimut × Höhe) einen Korrekturfaktor aus dem stündlichen Ertrag im Vergleich zur 06:00-Prognose. Verwendet nur Tage mit stabilem Verhältnis in den Stunden mit hoher Sonne, damit Wolken nicht als Verschattung zählen. Standard: aus.",
+          "shading_apply": "Multipliziert die Stunden jeder Quelle vor dem Gewichten mit dem gelernten Faktor. Wirkt erst, wenn Zellen gelernt sind.",
+          "horizon_sources": "Diese Quellen werden weder korrigiert noch zum Lernen verwendet, z. B. Open-Meteo mit aktivem use_horizon. Verhindert eine doppelte Korrektur."
         }
       }
     }
