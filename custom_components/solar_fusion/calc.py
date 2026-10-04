@@ -341,6 +341,13 @@ SHADING_FACTOR_MIN = 0.05
 SHADING_FACTOR_MAX = 1.0
 SHADING_NEUTRAL_ABOVE = 0.9      # Faktoren ab hier gelten als 1,0
 SHADING_APPLY_QUARTERS = True    # Anwenden: Mittel über vier Viertelstunden statt Slotmitte
+# Plausibilität des PV-Sensors: Stunden, in denen die Sonne an allen vier
+# Viertelstunden unter dieser Höhe steht, dürfen zusammen höchstens so viel
+# Ertrag zeigen (Zählerrauschen, Rundung). Mehr deutet auf einen Sensor hin,
+# der nicht nur PV misst – etwa die AC-Leistung eines Hybrid-Wechselrichters,
+# die abends Batterieentladung enthält.
+SHADING_NIGHT_ELEVATION = -2.0
+SHADING_MAX_NIGHT_WH = 200.0
 
 ShadingCells = Dict[str, Dict]   # {"245:12": {"az", "el", "factor", "n", "n_pooled", "learned"}}
 

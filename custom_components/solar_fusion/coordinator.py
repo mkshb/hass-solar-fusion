@@ -611,20 +611,23 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     async def _async_read_hourly_actual(self, target_date: date) -> Optional[Dict[str, float]]:
         """Stündlicher Ist-Ertrag eines Tages aus der Recorder-Langzeitstatistik.
 
-        {"HH": Wh}, HH = lokale Stunde des Periodenbeginns. Gleiche Reihenfolge
-        wie bei den Tageswerten: zuerst der eigene Tageszähler, sonst die
-        Summe der PV-Sensoren. Energiezähler liefern ``change`` (kWh),
+        {"HH": Wh}, HH = lokale Stunde des Periodenbeginns. Zuerst die Summe
+        der konfigurierten PV-Sensoren, nur ohne deren Statistik der eigene
+        Tageszähler: Dessen Statistik spiegelt die Sensoren, die damals
+        eingestellt waren – nach einer Korrektur in den Optionen würde das
+        rückwirkende Lernen sonst weiter die alten Werte lesen. Rücksetzungen
+        behandelt ``change`` ohnehin. Energiezähler liefern ``change`` (kWh),
         Leistungssensoren ``mean`` (W ≙ Wh je Stunde).
         """
-        daily_meter = self._find_daily_meter_entity()
-        if daily_meter:
-            result = await self._async_hourly_statistics([daily_meter], target_date)
+        pv_entities = self._pv_entities()
+        if pv_entities:
+            result = await self._async_hourly_statistics(pv_entities, target_date)
             if result:
                 return result
-        pv_entities = self._pv_entities()
-        if not pv_entities:
+        daily_meter = self._find_daily_meter_entity()
+        if not daily_meter:
             return None
-        return await self._async_hourly_statistics(pv_entities, target_date)
+        return await self._async_hourly_statistics([daily_meter], target_date)
 
     async def _async_hourly_statistics(
         self, entity_ids: List[str], target_date: date
@@ -681,6 +684,31 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             return None
         return {k: round(v, 1) for k, v in sorted(total.items())}
 
+    def _night_production_wh(self, day: str, actual: Dict[str, float]) -> float:
+        """Ertrag in Stunden, in denen die Sonne durchgehend unter dem Horizont steht."""
+        tz = dt_util.get_default_time_zone()
+        lat, lon = self.hass.config.latitude, self.hass.config.longitude
+        total = 0.0
+        for hh, wh in actual.items():
+            start = datetime.fromisoformat(f"{day}T{hh}:00").replace(tzinfo=tz)
+            positions = calc.slot_sun_positions(start, lat, lon, quarters=True)
+            if all(el < calc.SHADING_NIGHT_ELEVATION for _, el in positions):
+                total += wh
+        return total
+
+    def _check_night_production(self, day: str, actual: Dict[str, float]) -> Optional[str]:
+        """Warnung, wenn der PV-Sensor nachts Ertrag meldet (z. B. Wechselrichter-AC inkl. Batterie)."""
+        night = self._night_production_wh(day, actual)
+        if night <= calc.SHADING_MAX_NIGHT_WH:
+            return None
+        msg = (
+            f"PV sensor reports {night:.0f} Wh at night on {day} – is it the inverter "
+            f"AC output including battery discharge? Shading cannot be learned from "
+            f"such values; configure a PV production sensor ({self._pv_entities()})"
+        )
+        _LOGGER.warning("Shading: %s", msg)
+        return msg
+
     async def _async_maybe_learn_shading(self) -> None:
         """Abgeschlossene Tage mit Stunden-Snapshot ins Verschattungslernen übernehmen."""
         now = dt_util.now()
@@ -702,6 +730,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 self._shading_attempted[d] = now
                 _LOGGER.debug("Shading: no hourly actuals for %s yet", d)
                 continue
+            self._check_night_production(d, actual)
             self._shading["days"][d] = {
                 "actual": actual,
                 "forecast": self._morning_snapshots[d]["hourly"],
@@ -761,7 +790,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         }
         entities = {sid: eid for sid, eid in entities.items() if eid}
         today = dt_util.now().date()
-        summary: Dict[str, Any] = {"added": [], "skipped": {}}
+        summary: Dict[str, Any] = {"added": [], "skipped": {}, "warnings": []}
 
         for back in range(days, 0, -1):
             day = today - timedelta(days=back)
@@ -806,6 +835,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             if not actual:
                 summary["skipped"][d] = "no hourly statistics"
                 continue
+            warning = self._check_night_production(d, actual)
+            if warning:
+                summary["warnings"].append(warning)
             self._shading["days"][d] = {
                 "actual": actual,
                 "forecast": forecast,
