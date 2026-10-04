@@ -278,7 +278,8 @@ def _device(entry: ConfigEntry) -> DeviceInfo:
 # ──────────────────────────────────────────────────────────────────────────────
 
 class FusedForecastSensor(CoordinatorEntity, SensorEntity):
-    _attr_device_class = SensorDeviceClass.ENERGY
+    # Keine Device-Class „energy“: Sie verlangt state_class total/total_increasing,
+    # eine Prognose ist aber kein Zähler. measurement behält die Langzeitstatistik.
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_icon = "mdi:solar-power"
