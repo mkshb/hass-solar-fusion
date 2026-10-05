@@ -129,6 +129,11 @@ async def test_sensor_attributes_cover_what_the_card_reads(berlin, hass_storage)
     for record in attrs["history"]:
         assert per_record <= set(record)
 
+    tomorrow = state(hass, "forecast_tomorrow").attributes
+    per_tomorrow = _card_reads(r"\btomorrowAttrs\??\.(\w+)")
+    assert per_tomorrow == {"hourly_forecast_wh"}
+    assert per_tomorrow <= set(tomorrow)
+
     # Weitere Entitäten leitet die Karte aus der Entity-ID von forecast_today ab
     prefix = today.entity_id.removesuffix("_forecast_today")
     suffixes = _card_reads(r"\$\{this\._prefix\}(_\w+)")

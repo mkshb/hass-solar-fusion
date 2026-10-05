@@ -10,61 +10,61 @@
  *   type: custom:solar-fusion-card
  *   entity: sensor.solar_fusion_dach_forecast_today
  *   title: Solar Fusion Roof   # optional
+ *
+ * Colours and font come from the Home Assistant theme (CSS variables), so
+ * the card follows light, dark and custom themes.
  */
 
 // Integration version, passed by the integration as ?v=<version>
 const CARD_VERSION = new URL(import.meta.url).searchParams.get("v") || "dev";
 
-// Keys match the integration's language-neutral quality_label (calc.quality_label)
-const QUALITY = {
-  "accurate": { color: "#4ade80" },
-  "skewed":   { color: "#38bdf8" },
-  "noisy":    { color: "#facc15" },
-  "poor":     { color: "#f87171" },
-};
+// Hourly actuals from the recorder are refreshed at most this often
+const STATS_REFRESH_MS = 5 * 60 * 1000;
+const HISTORY_DAYS = 14;
 
-// Converts a #rrggbb hex color to rgba(r,g,b,alpha)
-function hexRgba(hex, alpha) {
-  const r = parseInt(hex.slice(1, 3), 16);
-  const g = parseInt(hex.slice(3, 5), 16);
-  const b = parseInt(hex.slice(5, 7), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
-}
+// Keys match the integration's language-neutral quality_label (calc.quality_label)
+const QUALITY_COLOR = {
+  accurate: "var(--success-color, #4caf50)",
+  skewed:   "var(--info-color, #039be5)",
+  noisy:    "var(--warning-color, #ffa600)",
+  poor:     "var(--error-color, #db4437)",
+};
 
 // Built-in English fallback – used when locale JSON files are unavailable
 const DEFAULT_LOCALE = {
   "entity_not_found": "Entity not found:",
   "default_title":    "Solar Fusion",
-  "updated":          "Updated",
-  "time_suffix":      "",
+  "updated":          "Updated {time}",
+  "details":          "Details",
+  "actual_today":     "Yield today",
+  "forecast_today":   "Forecast today",
+  "forecast_tomorrow": "Forecast tomorrow",
+  "of_forecast":      "{pct} % of forecast",
+  "uncertainty":      "±{pct} % uncertainty",
+  "from_sources":     "from {n} sources",
   "today":            "Today",
   "tomorrow":         "Tomorrow",
-  "uncertainty":      "% uncertainty",
-  "sources_today":    "Sources – Today",
-  "weight":           "Wgt.",
-  "quality_accuracy": "Quality & Accuracy",
-  "col_source":       "Source",
-  "col_label":        "Label",
-  "col_rmse":         "RMSE",
-  "col_mae":          "MAE",
-  "col_bias":         "Bias",
-  "col_days":         "Days",
-  "history_title":    "Forecast Deviation (14 days)",
-  "no_history":       "No history data yet",
-  "hero_actual":      "Today's Yield",
   "forecast":         "Forecast",
-  "over_forecast":    "Over-forecast",
-  "under_forecast":   "Under-forecast",
-  "days_short":       "d",
+  "actual":           "Yield",
+  "now":              "now",
+  "hour_tip":         "{hour}:00 · forecast {fc} kWh",
+  "hour_tip_actual":  "{hour}:00 · forecast {fc} kWh · yield {ac} kWh",
+  "no_hourly":        "No hourly forecast available",
+  "sources_today":    "Sources today",
   "quality_accurate": "Accurate",
   "quality_skewed":   "Skewed",
   "quality_noisy":    "Noisy",
   "quality_poor":     "Poor",
   "excluded":         "excl.",
   "excluded_reason":  "Excluded: RMSE {rmse} kWh too high compared to the best source",
-  "cal_raw":          "raw",
+  "quality_tip":      "RMSE {rmse} kWh · MAE {mae} kWh · bias {bias} kWh · {days} days",
   "cal_raw_hint":     "Calibration would increase the error – source is fused uncalibrated",
-  "rmse_calibrated":  "RMSE calibrated",
+  "history_title":    "Forecast deviation ({n} days)",
+  "avg_over":         "Ø +{v} kWh too high",
+  "avg_under":        "Ø −{v} kWh too low",
+  "day_over":         "{date}: +{v} kWh too high",
+  "day_under":        "{date}: −{v} kWh too low",
+  "no_history":       "No history data yet",
 };
 
 const SOURCE_SHORT = {
@@ -73,153 +73,130 @@ const SOURCE_SHORT = {
   "Solcast PV Forecast":       "Solcast",
 };
 
-
 const STYLES = `
-  @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap');
-
   :host {
-    --sf-bg:      #0f1117;
-    --sf-surface: #181c27;
-    --sf-border:  #252a38;
-    --sf-accent:  #f59e0b;
-    --sf-accent2: #38bdf8;
-    --sf-text:    #e2e8f0;
-    --sf-muted:   #64748b;
-    --sf-radius:  12px;
-    --sf-font:    'Syne', sans-serif;
-    --sf-mono:    'DM Mono', monospace;
+    --sf-solar: var(--energy-solar-color, #ff9800);
+    --sf-under: var(--info-color, #039be5);
+    --sf-forecast: color-mix(in srgb, var(--sf-solar) 35%, transparent);
+    --sf-tile: color-mix(in srgb, var(--primary-text-color) 6%, transparent);
+    --sf-track: color-mix(in srgb, var(--primary-text-color) 10%, transparent);
+    --sf-divider: var(--divider-color, rgba(127, 127, 127, 0.2));
+    --sf-secondary: var(--secondary-text-color);
   }
+  ha-card {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 20px;
+    color: var(--primary-text-color);
+  }
+  button { font: inherit; color: inherit; }
+  .muted { color: var(--sf-secondary); }
+  .small { font-size: 12px; }
 
-  * { box-sizing: border-box; margin: 0; padding: 0; }
+  /* Header */
+  .header { display: flex; align-items: center; gap: 12px; }
+  .header-icon {
+    width: 40px; height: 40px; flex-shrink: 0; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    color: var(--sf-solar);
+    background: color-mix(in srgb, var(--sf-solar) 20%, transparent);
+  }
+  .header-text { flex: 1; min-width: 0; }
+  .title { font-size: 16px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .icon-button {
+    width: 44px; height: 44px; flex-shrink: 0; border: 0; border-radius: 50%;
+    background: transparent; color: var(--sf-secondary); cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .icon-button:hover { background: var(--sf-tile); }
 
-  .card {
-    background: var(--sf-bg);
-    border: 1px solid var(--sf-border);
-    border-radius: var(--sf-radius);
-    padding: 20px;
-    font-family: var(--sf-font);
-    color: var(--sf-text);
-    overflow: hidden;
-    position: relative;
-    container-type: inline-size;
+  /* Tiles */
+  .tiles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .tile {
+    background: var(--sf-tile); border: 0; border-radius: 12px; padding: 12px;
+    display: flex; flex-direction: column; gap: 4px; text-align: left; cursor: pointer; min-width: 0;
   }
-  .card::before {
-    content: '';
-    position: absolute;
-    top: -60px; right: -60px;
-    width: 200px; height: 200px;
-    background: radial-gradient(circle, rgba(245,158,11,0.07) 0%, transparent 70%);
-    pointer-events: none;
-  }
+  .tile-value { font-size: 22px; font-weight: 500; white-space: nowrap; }
+  .tile-unit { font-size: 13px; font-weight: 400; color: var(--sf-secondary); }
+  .progress { display: block; height: 4px; border-radius: 2px; background: var(--sf-track); overflow: hidden; }
+  .progress > * { display: block; height: 100%; background: var(--sf-solar); }
 
-  /* Clickable base style */
-  [data-entity] {
-    cursor: pointer;
-    transition: opacity 0.15s ease;
+  /* Chart */
+  .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+  .toggle { display: inline-flex; padding: 2px; border-radius: 10px; background: var(--sf-tile); }
+  .toggle button {
+    min-height: 32px; padding: 0 14px; border: 0; border-radius: 8px; background: transparent;
+    font-size: 13px; font-weight: 500; color: var(--sf-secondary); cursor: pointer;
   }
-  [data-entity]:hover { opacity: 0.75; }
-  [data-entity]:active { opacity: 0.5; }
-
-  .header {
-    display: flex; justify-content: space-between; align-items: flex-start;
-    margin-bottom: 20px;
+  .toggle button[aria-pressed="true"] {
+    background: var(--ha-card-background, var(--card-background-color, #fff));
+    color: var(--primary-text-color);
   }
-  .title { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--sf-muted); }
-  .updated { font-family: var(--sf-mono); font-size: 10px; color: var(--sf-muted); text-align: right; }
-
-  /* Hero */
-  .hero { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px; }
-  .hero-card {
-    background: var(--sf-surface); border: 1px solid var(--sf-border);
-    border-radius: 10px; padding: 14px 16px; position: relative; overflow: hidden;
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--sf-secondary); }
+  .legend span { display: flex; align-items: center; gap: 6px; }
+  .swatch { width: 10px; height: 10px; border-radius: 2px; }
+  .chart { display: flex; gap: 8px; margin-top: 10px; }
+  .axis {
+    height: 160px; width: 40px; flex-shrink: 0; display: flex; flex-direction: column;
+    justify-content: space-between; text-align: right; font-size: 11px; color: var(--sf-secondary);
   }
-  .hero-card:hover { border-color: #3a4255; }
-  .hero-bar { position: absolute; bottom: 0; left: 0; right: 0; height: 2px; }
-  .hero-label { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--sf-muted); margin-bottom: 2px; }
-  .hero-sublabel { font-size: 9px; font-weight: 400; letter-spacing: 0.05em; text-transform: uppercase; color: var(--sf-muted); opacity: 0.5; margin-bottom: 6px; }
-  .hero-value { font-size: 28px; font-weight: 800; line-height: 1; }
-  .hero-unit { font-size: 13px; font-weight: 400; color: var(--sf-muted); margin-left: 3px; }
-  .hero-unc { font-family: var(--sf-mono); font-size: 10px; color: var(--sf-muted); margin-top: 6px; }
-
-  /* Section */
-  .section-title {
-    font-size: 10px; font-weight: 700; letter-spacing: 0.12em; text-transform: uppercase;
-    color: var(--sf-muted); margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--sf-border);
+  .plot { flex: 1; position: relative; height: 160px; min-width: 0; }
+  .grid { position: absolute; left: 0; right: 0; border-top: 1px dashed var(--sf-divider); }
+  .bars {
+    position: absolute; inset: 0; display: flex; align-items: flex-end; gap: 4px;
+    border-bottom: 1px solid var(--sf-divider);
   }
+  .bar {
+    flex: 1; height: 100%; position: relative; padding: 0; border: 0; background: transparent;
+    cursor: pointer; min-width: 0;
+  }
+  .bar .fc, .bar .ac { display: block; position: absolute; bottom: 0; }
+  .bar .fc { left: 0; right: 0; border-radius: 3px 3px 0 0; background: var(--sf-forecast); }
+  .bar .ac { left: 20%; right: 20%; border-radius: 2px 2px 0 0; background: var(--sf-solar); }
+  .bar.selected .fc { outline: 1px solid var(--sf-solar); }
+  .labels { display: flex; gap: 4px; padding-left: 48px; margin-top: 4px; }
+  .labels span { flex: 1; min-width: 0; font-size: 11px; text-align: center; white-space: nowrap; overflow: visible; color: var(--sf-secondary); }
+  .labels span.now { color: var(--primary-text-color); font-weight: 500; }
+  .info { min-height: 16px; margin-top: 6px; font-size: 12px; color: var(--sf-secondary); }
 
   /* Sources */
-  .sources { margin-bottom: 20px; }
-  .source-row {
-    display: grid; grid-template-columns: 110px 1fr 70px 68px;
-    align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid #1e2330;
-    border-radius: 4px;
+  .section-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .source {
+    display: grid; grid-template-columns: minmax(0, 104px) 76px minmax(0, 1fr) 72px minmax(36px, max-content);
+    align-items: center; gap: 10px; min-height: 44px; border-top: 1px solid var(--sf-divider); cursor: pointer;
   }
-  .source-row:last-child { border-bottom: none; }
-  .source-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
-  .bar-wrap { height: 6px; background: var(--sf-border); border-radius: 3px; overflow: hidden; }
-  .bar { height: 100%; border-radius: 3px; background: var(--sf-accent); transition: width 0.7s cubic-bezier(.4,0,.2,1); }
-  .source-kwh { font-family: var(--sf-mono); font-size: 11px; text-align: right; }
-  .source-weight { font-family: var(--sf-mono); font-size: 10px; color: var(--sf-muted); text-align: right; }
-  .source-kwh-tmr { font-family: var(--sf-mono); font-size: 9px; color: var(--sf-muted); margin-top: 1px; }
-  .source-row.excluded .source-name,
-  .source-row.excluded .source-kwh,
-  .source-row.excluded .bar-wrap { opacity: 0.4; }
-  .source-row.excluded .bar { background: var(--sf-muted); }
-  .source-excl { color: #f87171; text-transform: uppercase; letter-spacing: 0.06em; }
-
-  /* Quality table */
-  .q-section { margin-bottom: 20px; }
-  .q-header, .q-row {
-    display: grid; grid-template-columns: 1fr 60px 46px 46px 46px 36px;
-    align-items: center; gap: 10px; padding: 7px 0; border-bottom: 1px solid #1e2330;
-    border-radius: 4px;
-  }
-  .q-row:last-child { border-bottom: none; }
-  .q-header { font-size: 9px; font-weight: 700; letter-spacing: 0.08em; text-transform: uppercase; color: var(--sf-muted); padding-bottom: 4px; }
-  .q-col-label { text-align: left; }
-  .q-name { font-size: 12px; font-weight: 600; white-space: nowrap; }
-  .q-val { font-family: var(--sf-mono); font-size: 11px; }
-  .q-days { font-family: var(--sf-mono); font-size: 10px; color: var(--sf-muted); }
-  .q-cal { font-family: var(--sf-mono); font-size: 8px; color: var(--sf-muted); margin-top: 2px; opacity: 0.7; }
-  .badge { display: inline-block; padding: 2px 7px; border-radius: 4px; font-size: 9px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--sf-font); }
-
-  /* Sparkline */
-  .spark-wrap {
-    background: var(--sf-surface); border: 1px solid var(--sf-border);
-    border-radius: 10px; padding: 14px;
-  }
-  .spark-wrap > svg { width: 100%; height: 80px; display: block; }
-  .legend { display: flex; gap: 20px; margin-top: 14px; padding-top: 10px; border-top: 1px solid var(--sf-border); align-items: center; }
-  .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; font-family: var(--sf-mono); white-space: nowrap; }
-  .legend-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
-
-  /* ── Responsive breakpoints via container queries ─────────────────── */
-
-  /* Narrow (~320 px): drop weight + days columns */
-  @container (max-width: 320px) {
-    .source-name   { overflow: hidden; text-overflow: ellipsis; }
-    .source-weight { display: none; }
-    .source-row    { grid-template-columns: minmax(0, 1fr) 1fr 68px; }
-    .q-name        { overflow: hidden; text-overflow: ellipsis; }
-    .q-col-days, .q-days { display: none; }
-    .q-header, .q-row { grid-template-columns: 1fr 58px 44px 44px 44px; }
+  .source-name { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .source-kwh { font-size: 14px; text-align: right; white-space: nowrap; }
+  .source-weight { font-size: 12px; text-align: right; color: var(--sf-secondary); }
+  .source.excluded .source-name, .source.excluded .source-kwh, .source.excluded .progress { opacity: 0.45; }
+  .source.excluded .progress > * { background: var(--sf-secondary); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 500;
+    white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis;
   }
 
-  /* Narrow hero: 3 → 2 columns */
-  @container (max-width: 360px) {
-    .hero { grid-template-columns: 1fr 1fr; }
-  }
+  /* Deviation */
+  .dev-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+  .dev { height: 64px; display: flex; gap: 6px; margin-top: 8px; }
+  .day { flex: 1; display: flex; flex-direction: column; padding: 0; border: 0; background: transparent; cursor: pointer; min-width: 0; }
+  .day .up, .day .down { width: 100%; }
+  .day .up { height: 32px; display: flex; align-items: flex-end; border-bottom: 1px solid var(--sf-divider); }
+  .day .down { height: 32px; display: flex; align-items: flex-start; }
+  .day .up > span { display: block; width: 100%; border-radius: 2px 2px 0 0; background: var(--sf-solar); }
+  .day .down > span { display: block; width: 100%; border-radius: 0 0 2px 2px; background: var(--sf-under); }
+  .day.selected { outline: 1px solid var(--sf-divider); outline-offset: 2px; border-radius: 2px; }
+  .dev-dates { display: flex; justify-content: space-between; font-size: 11px; color: var(--sf-secondary); margin-top: 4px; }
+  .empty { padding: 16px 0; text-align: center; font-size: 12px; color: var(--sf-secondary); }
 
-  /* Very narrow (~260 px): stack hero, drop kWh + mae + bias columns */
-  @container (max-width: 260px) {
-    .hero          { grid-template-columns: 1fr 1fr; }
-    .hero-value    { font-size: 22px; }
-    .source-kwh    { display: none; }
-    .source-row    { grid-template-columns: minmax(0, 1fr) 1fr; }
-    .q-col-mae, .q-val-mae { display: none; }
-    .q-col-bias, .q-val-bias { display: none; }
-    .q-header, .q-row { grid-template-columns: 1fr 56px 44px; }
+  /* Narrow cards */
+  @container (max-width: 400px) {
+    .tile { padding: 10px 8px; }
+    .tile-value { font-size: 18px; }
+    .source { grid-template-columns: minmax(0, 1fr) 72px 64px; }
+    .source .badge-cell, .source .source-weight { display: none; }
   }
+  .wrap { container-type: inline-size; }
 `;
 
 class SolarFusionCard extends HTMLElement {
@@ -231,6 +208,12 @@ class SolarFusionCard extends HTMLElement {
     this._prefix = "";
     this._locale = {};
     this._localeLang = null;
+    this._day = "today";        // chart: "today" | "tomorrow"
+    this._selectedHour = null;  // chart slot shown in the info line (tap on mobile)
+    this._selectedDay = null;   // deviation day shown in the info line
+    this._actualHourly = {};    // {"HH": kWh} today, from recorder statistics
+    this._statsFetched = 0;
+    this._statsDate = null;
   }
 
   // Load locale JSON from locales/<lang>.json next to the card file.
@@ -248,15 +231,16 @@ class SolarFusionCard extends HTMLElement {
     return {};
   }
 
-  // Returns a translated string, falling back to the key itself.
-  _t(key) {
-    return this._locale[key] ?? DEFAULT_LOCALE[key] ?? key;
+  // Returns a translated string with {name} placeholders filled
+  _t(key, vars = {}) {
+    const text = this._locale[key] ?? DEFAULT_LOCALE[key] ?? key;
+    return text.replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
   }
 
   setConfig(config) {
     if (!config.entity) throw new Error("'entity' is required");
     this._config = config;
-    // Derive prefix: "sensor.solar_fusion_dach_fused_today" → "sensor.solar_fusion_dach"
+    // Derive prefix: "sensor.solar_fusion_dach_forecast_today" → "sensor.solar_fusion_dach"
     this._prefix = config.entity.replace(/_forecast_today$/, "");
     this._render();
   }
@@ -264,6 +248,7 @@ class SolarFusionCard extends HTMLElement {
   set hass(hass) {
     const lang = hass.language || "en";
     this._hass = hass;
+    this._maybeFetchStats();
 
     if (lang !== this._localeLang) {
       this._localeLang = lang;
@@ -276,28 +261,116 @@ class SolarFusionCard extends HTMLElement {
     }
   }
 
-  // Fire HA more-info dialog for the given entity_id
-  _moreInfo(entityId) {
-    const event = new Event("hass-more-info", { bubbles: true, composed: true });
-    event.detail = { entityId };
-    this.dispatchEvent(event);
+  getCardSize() {
+    return 9;
   }
 
-  // Attach click listeners to all [data-entity] elements after render
-  _attachListeners() {
-    this.shadowRoot.querySelectorAll("[data-entity]").forEach(el => {
-      el.addEventListener("click", () => this._moreInfo(el.dataset.entity));
+  static getStubConfig() {
+    return { entity: "sensor.solar_fusion_dach_forecast_today" };
+  }
+
+  // ── Data ────────────────────────────────────────────────────────────────
+
+  _actualId() {
+    return `${this._prefix}_diagnostics_pv_daily_production`;
+  }
+
+  _todayIso() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+  }
+
+  // Hourly yield of today from the recorder's long-term statistics of the
+  // PV daily meter (statistics are written after each hour ends).
+  async _maybeFetchStats() {
+    const today = this._todayIso();
+    if (this._statsDate === today && Date.now() - this._statsFetched < STATS_REFRESH_MS) return;
+    if (!this._hass?.states[this._actualId()]) return;
+    if (this._statsDate !== today) this._actualHourly = {};
+    this._statsFetched = Date.now();
+    this._statsDate = today;
+    const start = new Date();
+    start.setHours(0, 0, 0, 0);
+    try {
+      const result = await this._hass.callWS({
+        type: "recorder/statistics_during_period",
+        start_time: start.toISOString(),
+        statistic_ids: [this._actualId()],
+        period: "hour",
+        types: ["change"],
+        units: { energy: "kWh" },
+      });
+      const hourly = {};
+      for (const row of result?.[this._actualId()] || []) {
+        const begin = new Date(row.start);
+        if (row.change == null || begin < start) continue;
+        hourly[String(begin.getHours()).padStart(2, "0")] = Math.max(0, row.change);
+      }
+      this._actualHourly = hourly;
+      this._render();
+    } catch (err) {
+      console.debug("Solar Fusion Card: no hourly statistics", err);
+    }
+  }
+
+  // [{hour, fc, ac}] in kWh for the chart; today includes the running hour
+  _hourlySeries(attrs, tomorrowAttrs, actualKwh) {
+    const isToday = this._day === "today";
+    const source = (isToday ? attrs.hourly_forecast_wh : tomorrowAttrs?.hourly_forecast_wh) || {};
+    const fc = {};
+    for (const [slot, wh] of Object.entries(source)) {
+      fc[slot.slice(11, 13)] = (Number(wh) || 0) / 1000;
+    }
+    const ac = {};
+    if (isToday) {
+      Object.assign(ac, this._actualHourly);
+      // Running hour: total so far minus the completed hours
+      const nowHour = String(new Date().getHours()).padStart(2, "0");
+      if (actualKwh != null && !(nowHour in ac)) {
+        const done = Object.values(ac).reduce((a, b) => a + b, 0);
+        if (actualKwh - done > 0) ac[nowHour] = actualKwh - done;
+      }
+    }
+    const hours = [...new Set([...Object.keys(fc), ...Object.keys(ac)])]
+      .filter(h => (fc[h] || 0) > 0.001 || (ac[h] || 0) > 0.001)
+      .map(Number);
+    if (!hours.length) return [];
+    const series = [];
+    for (let h = Math.min(...hours); h <= Math.max(...hours); h++) {
+      const key = String(h).padStart(2, "0");
+      series.push({ hour: key, fc: fc[key] || 0, ac: isToday && key in ac ? ac[key] : null });
+    }
+    return series;
+  }
+
+  // [{date, deviation}] – mean morning forecast of the sources minus actual
+  _deviationSeries(history) {
+    const byDate = {};
+    for (const r of history) {
+      if (!byDate[r.date]) byDate[r.date] = { forecasts: [], actual: r.actual_kwh };
+      byDate[r.date].forecasts.push(r.forecast_kwh);
+    }
+    return Object.entries(byDate)
+      .sort(([a], [b]) => a.localeCompare(b))
+      .slice(-HISTORY_DAYS)
+      .map(([date, v]) => ({
+        date,
+        deviation: v.forecasts.reduce((a, b) => a + b, 0) / (v.forecasts.length || 1) - v.actual,
+      }));
+  }
+
+  // ── Formatting ──────────────────────────────────────────────────────────
+
+  _num(v, decimals = 1) {
+    if (v === null || v === undefined || Number.isNaN(Number(v))) return "—";
+    return Number(v).toLocaleString(this._hass?.language || "en", {
+      minimumFractionDigits: decimals, maximumFractionDigits: decimals,
     });
   }
 
-  _fmt(v, decimals = 2) {
-    if (v === null || v === undefined) return "—";
-    return Number(v).toFixed(decimals);
-  }
-
-  // Fills {name} placeholders in a translated string
-  _tf(key, vars) {
-    return this._t(key).replace(/\{(\w+)\}/g, (m, k) => vars[k] ?? m);
+  _date(iso) {
+    const [y, m, d] = iso.split("-").map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(this._hass?.language || "en", { day: "2-digit", month: "2-digit" });
   }
 
   _escape(str) {
@@ -306,70 +379,178 @@ class SolarFusionCard extends HTMLElement {
     })[c]);
   }
 
+  // Upper end of the chart axis: a round number ≥ max
+  _axisMax(max) {
+    if (max <= 0) return 1;
+    for (const step of [0.5, 1, 2, 2.5, 5, 10, 20, 50]) {
+      if (max <= step * 2) return step * 2;
+    }
+    return Math.ceil(max / 50) * 50;
+  }
+
   // RMSE that drives the weight: calibrated when calibration is active, else raw
   _effectiveRmse(s) {
     return s.calibration_active !== false && s.rmse_calibrated_kwh != null
       ? s.rmse_calibrated_kwh : s.rmse_kwh;
   }
 
-  // Short calibration hint for the quality table; null when nothing to show
-  _calShort(s) {
-    if (s.calibration_active === false) return this._t("cal_raw");
-    const mode = s.calibration_mode || "";
-    if (mode.startsWith("isotonic")) return "iso";
-    if (mode.startsWith("linear")) return "linear";
-    return null;
+  _qualityTip(s) {
+    const bias = s.bias_kwh != null ? (s.bias_kwh > 0 ? "+" : "") + this._num(s.bias_kwh, 2) : "—";
+    const lines = [this._t("quality_tip", {
+      rmse: this._num(s.rmse_kwh, 2), mae: this._num(s.mae_kwh, 2), bias, days: s.days_evaluated ?? 0,
+    })];
+    if (s.excluded) {
+      const rmse = this._effectiveRmse(s);
+      lines.push(this._t("excluded_reason", { rmse: rmse != null ? this._num(rmse, 1) : "—" }));
+    }
+    if (s.calibration_active === false) lines.push(this._t("cal_raw_hint"));
+    return lines.join("\n");
   }
 
-  _sparkline(history) {
-    const byDate = {};
-    for (const r of history) {
-      if (!byDate[r.date]) byDate[r.date] = { forecasts: [], actual: r.actual_kwh };
-      byDate[r.date].forecasts.push(r.forecast_kwh);
+  _badge(s) {
+    const key = (s.quality_label || "").toLowerCase();
+    const color = QUALITY_COLOR[key];
+    if (!color) return s.quality_label ? `<span class="badge muted">${this._escape(s.quality_label)}</span>` : "";
+    // Text mixed towards the text colour: readable on light and dark themes
+    return `<span class="badge" style="color:color-mix(in srgb, ${color} 70%, var(--primary-text-color));background:color-mix(in srgb, ${color} 18%, transparent)">${this._escape(this._t(`quality_${key}`))}</span>`;
+  }
+
+  // ── Interaction ─────────────────────────────────────────────────────────
+
+  _moreInfo(entityId) {
+    const event = new Event("hass-more-info", { bubbles: true, composed: true });
+    event.detail = { entityId };
+    this.dispatchEvent(event);
+  }
+
+  _attachListeners() {
+    const root = this.shadowRoot;
+    root.querySelectorAll("[data-entity]").forEach(el => {
+      el.addEventListener("click", () => this._moreInfo(el.dataset.entity));
+    });
+    root.querySelectorAll("[data-day]").forEach(el => {
+      el.addEventListener("click", () => {
+        this._day = el.dataset.day;
+        this._selectedHour = null;
+        this._render();
+      });
+    });
+    root.querySelectorAll("[data-hour]").forEach(el => {
+      el.addEventListener("click", () => {
+        this._selectedHour = this._selectedHour === el.dataset.hour ? null : el.dataset.hour;
+        this._render();
+      });
+    });
+    root.querySelectorAll("[data-dev]").forEach(el => {
+      el.addEventListener("click", () => {
+        this._selectedDay = this._selectedDay === el.dataset.dev ? null : el.dataset.dev;
+        this._render();
+      });
+    });
+  }
+
+  // ── Rendering ───────────────────────────────────────────────────────────
+
+  _renderChart(series) {
+    const toggle = `
+      <div class="toggle" role="group">
+        <button data-day="today" aria-pressed="${this._day === "today"}">${this._t("today")}</button>
+        <button data-day="tomorrow" aria-pressed="${this._day === "tomorrow"}">${this._t("tomorrow")}</button>
+      </div>`;
+    const legend = `
+      <div class="legend">
+        <span><span class="swatch" style="background:var(--sf-forecast)"></span>${this._t("forecast")}</span>
+        ${this._day === "today" ? `<span><span class="swatch" style="background:var(--sf-solar)"></span>${this._t("actual")}</span>` : ""}
+      </div>`;
+    if (!series.length) {
+      return `<div><div class="chart-head">${toggle}${legend}</div><div class="empty">${this._t("no_hourly")}</div></div>`;
     }
-    const points = Object.entries(byDate)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-14)
-      .map(([date, v]) => ({
-        date,
-        deviation: v.forecasts.reduce((a, b) => a + b, 0) / (v.forecasts.length || 1) - v.actual,
-      }));
 
-    if (points.length < 1) {
-      return `<text x="50%" y="50%" text-anchor="middle" fill="#64748b"
-        font-size="11" font-family="DM Mono,monospace">${this._t("no_history")}</text>`;
-    }
+    const top = this._axisMax(Math.max(...series.map(p => Math.max(p.fc, p.ac || 0))));
+    const height = 156;
+    const nowHour = this._day === "today" ? String(new Date().getHours()).padStart(2, "0") : null;
+    const nowIndex = series.findIndex(p => p.hour === nowHour);
+    const tip = p => p.ac != null
+      ? this._t("hour_tip_actual", { hour: p.hour, fc: this._num(p.fc), ac: this._num(p.ac) })
+      : this._t("hour_tip", { hour: p.hour, fc: this._num(p.fc) });
 
-    const W = 400, H = 80;
-    const CT = 6, CB = 62;           // chart area top / bottom y
-    const midY = (CT + CB) / 2;      // zero line y = 34
-    const maxDev = Math.max(...points.map(p => Math.abs(p.deviation)), 0.5);
-    const scale = (midY - CT) / maxDev;
-
-    const n = points.length;
-    const slotW = (W - 24) / n;
-    const barW = Math.max(3, Math.min(slotW * 0.75, 24));
-
-    const bars = points.map((p, i) => {
-      const cx  = 12 + i * slotW + slotW / 2;
-      const h   = Math.abs(p.deviation) * scale;
-      const y   = p.deviation >= 0 ? midY - h : midY;
-      const col = p.deviation >= 0 ? "#f59e0b" : "#60a5fa";
-      return `<rect x="${(cx - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${Math.max(h, 1).toFixed(1)}" fill="${col}" rx="1.5"/>`;
+    const bars = series.map(p => {
+      const fh = Math.max(1, Math.round(p.fc / top * height));
+      const ah = p.ac != null ? Math.max(1, Math.round(p.ac / top * height)) : 0;
+      const label = this._escape(tip(p));
+      return `<button class="bar${this._selectedHour === p.hour ? " selected" : ""}" data-hour="${p.hour}" title="${label}" aria-label="${label}">
+        <span class="fc" style="height:${p.fc > 0 ? fh : 0}px"></span>
+        ${p.ac != null ? `<span class="ac" style="height:${ah}px"></span>` : ""}
+      </button>`;
     }).join("");
 
-    const zero = `<line x1="8" y1="${midY}" x2="${W - 8}" y2="${midY}" stroke="#3a4255" stroke-width="1"/>`;
+    const labels = series.map((p, i) => {
+      if (i === nowIndex) return `<span class="now">${this._t("now")}</span>`;
+      const crowded = nowIndex >= 0 && Math.abs(i - nowIndex) <= 1;
+      return `<span>${Number(p.hour) % 3 === 0 && !crowded ? p.hour : ""}</span>`;
+    }).join("");
 
-    const scaleLabels = `
-      <text x="${W - 8}" y="${CT + 8}" text-anchor="end" fill="#4b5563" font-size="8" font-family="DM Mono,monospace">+${maxDev.toFixed(1)}</text>
-      <text x="${W - 8}" y="${CB - 2}" text-anchor="end" fill="#4b5563" font-size="8" font-family="DM Mono,monospace">−${maxDev.toFixed(1)}</text>`;
+    const selected = series.find(p => p.hour === this._selectedHour);
+    return `
+      <div>
+        <div class="chart-head">${toggle}${legend}</div>
+        <div class="chart">
+          <div class="axis"><span>${this._num(top, top < 2 ? 1 : 0)} kWh</span><span>${this._num(top / 2, top < 4 ? 1 : 0)}</span><span>0</span></div>
+          <div class="plot">
+            <div class="grid" style="top:${160 - height}px"></div>
+            <div class="grid" style="top:${160 - height / 2}px"></div>
+            <div class="bars">${bars}</div>
+          </div>
+        </div>
+        <div class="labels">${labels}</div>
+        <div class="info">${selected ? this._escape(tip(selected)) : ""}</div>
+      </div>`;
+  }
 
-    const fmt = d => d.slice(5).replace("-", "/");
-    const dateLabels = `
-      <text x="12" y="${H - 4}" fill="#4b5563" font-size="8" font-family="DM Mono,monospace">${fmt(points[0].date)}</text>
-      ${points.length > 1 ? `<text x="${W - 12}" y="${H - 4}" text-anchor="end" fill="#4b5563" font-size="8" font-family="DM Mono,monospace">${fmt(points[points.length - 1].date)}</text>` : ""}`;
+  _renderSources(sourceList, entityId) {
+    if (!sourceList.length) return "";
+    const maxKwh = Math.max(...sourceList.map(([, s]) => s.today_kwh || 0), 0.1);
+    return `
+      <div>
+        <div class="section-title">${this._t("sources_today")}</div>
+        ${sourceList.map(([, s]) => `
+          <div class="source${s.excluded ? " excluded" : ""}" data-entity="${entityId}" title="${this._escape(this._qualityTip(s))}">
+            <div class="source-name">${this._escape(SOURCE_SHORT[s.name] || s.name)}</div>
+            <div class="badge-cell">${this._badge(s)}</div>
+            <div class="progress"><div style="width:${((s.today_kwh || 0) / maxKwh * 100).toFixed(1)}%"></div></div>
+            <div class="source-kwh">${this._num(s.today_kwh)} kWh</div>
+            <div class="source-weight">${s.excluded ? this._t("excluded") : s.weight != null ? this._num(s.weight * 100, 0) + " %" : "—"}</div>
+          </div>`).join("")}
+      </div>`;
+  }
 
-    return zero + bars + scaleLabels + dateLabels;
+  _renderDeviation(points) {
+    const title = `<div class="section-title" style="margin:0">${this._t("history_title", { n: HISTORY_DAYS })}</div>`;
+    if (!points.length) {
+      return `<div><div class="dev-head">${title}</div><div class="empty">${this._t("no_history")}</div></div>`;
+    }
+    const avg = points.reduce((a, p) => a + p.deviation, 0) / points.length;
+    const avgText = this._t(avg >= 0 ? "avg_over" : "avg_under", { v: this._num(Math.abs(avg)) });
+    const maxDev = Math.max(...points.map(p => Math.abs(p.deviation)), 0.5);
+    const tip = p => this._t(p.deviation >= 0 ? "day_over" : "day_under", {
+      date: this._date(p.date), v: this._num(Math.abs(p.deviation)),
+    });
+    const days = points.map(p => {
+      const h = Math.max(2, Math.round(Math.abs(p.deviation) / maxDev * 30));
+      const label = this._escape(tip(p));
+      return `<button class="day${this._selectedDay === p.date ? " selected" : ""}" data-dev="${p.date}" title="${label}" aria-label="${label}">
+        <span class="up">${p.deviation > 0 ? `<span style="height:${h}px"></span>` : ""}</span>
+        <span class="down">${p.deviation < 0 ? `<span style="height:${h}px"></span>` : ""}</span>
+      </button>`;
+    }).join("");
+    const selected = points.find(p => p.date === this._selectedDay);
+    return `
+      <div>
+        <div class="dev-head">${title}<span class="small muted">${avgText}</span></div>
+        <div class="dev">${days}</div>
+        <div class="dev-dates"><span>${this._date(points[0].date)}</span><span>${this._date(points[points.length - 1].date)}</span></div>
+        <div class="info">${selected ? this._escape(tip(selected)) : ""}</div>
+      </div>`;
   }
 
   _render() {
@@ -382,147 +563,78 @@ class SolarFusionCard extends HTMLElement {
     const mainState = this._hass.states[entityId];
     if (!mainState) {
       this.shadowRoot.innerHTML = `<style>${STYLES}</style>
-        <div class="card"><div style="color:#64748b;padding:20px;text-align:center">
-          ${this._t("entity_not_found")} ${entityId}</div></div>`;
+        <ha-card><div class="empty">${this._t("entity_not_found")} ${this._escape(entityId)}</div></ha-card>`;
       return;
     }
 
-    const attrs       = mainState.attributes;
-    const todayKwh    = parseFloat(mainState.state) || 0;
-    const tomorrowKwh = attrs.fused_tomorrow_kwh;
-    const uncertainty = attrs.uncertainty_pct;
-    const sources     = attrs.sources || {};
-    const history     = attrs.history || [];
-    const title       = this._config.title || this._t("default_title");
-    const lang        = this._hass.language || "en";
+    const attrs         = mainState.attributes;
+    const tomorrowAttrs = this._hass.states[tomorrowId]?.attributes || {};
+    const todayKwh      = parseFloat(mainState.state);
+    const tomorrowKwh   = attrs.fused_tomorrow_kwh;
+    const actualRaw     = parseFloat(this._hass.states[actualId]?.state);
+    const actualKwh     = Number.isNaN(actualRaw) ? null : actualRaw;
+    const uncertainty   = attrs.uncertainty_pct;
+    const sources       = attrs.sources || {};
+    const history       = attrs.history || [];
+    const nSources      = (attrs.active_sources || []).length;
+    const title         = this._config.title || this._t("default_title");
+    const lang          = this._hass.language || "en";
 
-    let updatedStr = "—";
+    let updated = "";
     try {
-      if (attrs.last_updated)
-        updatedStr = new Date(attrs.last_updated)
-          .toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" });
+      if (attrs.last_updated) {
+        updated = this._t("updated", {
+          time: new Date(attrs.last_updated).toLocaleTimeString(lang, { hour: "2-digit", minute: "2-digit" }),
+        });
+      }
     } catch (_) {}
 
-    const sourceList = Object.entries(sources); // [[id, data], ...]
-    const maxKwh = Math.max(...sourceList.map(([, s]) => s.today_kwh || 0), 0.1);
+    const pct = actualKwh != null && todayKwh > 0 ? Math.round(actualKwh / todayKwh * 100) : null;
+    const series = this._hourlySeries(attrs, tomorrowAttrs, actualKwh);
 
     this.shadowRoot.innerHTML = `
       <style>${STYLES}</style>
-      <div class="card">
+      <ha-card>
+      <div class="wrap" style="display:flex;flex-direction:column;gap:20px">
 
         <div class="header">
-          <div class="title">${title}</div>
-          <div class="updated">${this._t("updated")}<br>${updatedStr}${this._t("time_suffix")}</div>
+          <div class="header-icon"><ha-icon icon="mdi:solar-power-variant"></ha-icon></div>
+          <div class="header-text">
+            <div class="title">${this._escape(title)}</div>
+            <div class="small muted">${this._escape(updated)}</div>
+          </div>
+          <button class="icon-button" data-entity="${entityId}" aria-label="${this._t("details")}">
+            <ha-icon icon="mdi:dots-vertical"></ha-icon>
+          </button>
         </div>
 
-        <!-- Hero: actual + today + tomorrow -->
-        <div class="hero">
-          <div class="hero-card" data-entity="${actualId}">
-            <div class="hero-bar" style="background:#4ade80"></div>
-            <div class="hero-label">${this._t("hero_actual")}</div>
-            <div class="hero-sublabel" style="visibility:hidden">.</div>
-            <div class="hero-value">${this._fmt(parseFloat(this._hass.states[actualId]?.state) || null, 1)}<span class="hero-unit">kWh</span></div>
-          </div>
-          <div class="hero-card" data-entity="${entityId}">
-            <div class="hero-bar" style="background:var(--sf-accent)"></div>
-            <div class="hero-label">${this._t("today")}</div>
-            <div class="hero-sublabel">${this._t("forecast")}</div>
-            <div class="hero-value">${this._fmt(todayKwh, 1)}<span class="hero-unit">kWh</span></div>
-            ${uncertainty != null
-              ? `<div class="hero-unc">±${this._fmt(uncertainty, 1)} ${this._t("uncertainty")}</div>`
-              : ""}
-          </div>
-          <div class="hero-card" data-entity="${tomorrowId}">
-            <div class="hero-bar" style="background:var(--sf-accent2)"></div>
-            <div class="hero-label">${this._t("tomorrow")}</div>
-            <div class="hero-sublabel">${this._t("forecast")}</div>
-            <div class="hero-value">${this._fmt(tomorrowKwh, 1)}<span class="hero-unit">kWh</span></div>
-          </div>
+        <div class="tiles">
+          <button class="tile" data-entity="${actualId}">
+            <span class="small muted">${this._t("actual_today")}</span>
+            <span class="tile-value">${this._num(actualKwh)}<span class="tile-unit"> kWh</span></span>
+            ${pct != null ? `<span class="progress"><span style="width:${Math.min(pct, 100)}%"></span></span>
+            <span class="small muted">${this._t("of_forecast", { pct })}</span>` : ""}
+          </button>
+          <button class="tile" data-entity="${entityId}">
+            <span class="small muted">${this._t("forecast_today")}</span>
+            <span class="tile-value">${this._num(todayKwh)}<span class="tile-unit"> kWh</span></span>
+            ${uncertainty != null ? `<span class="small muted">${this._t("uncertainty", { pct: this._num(uncertainty) })}</span>` : ""}
+          </button>
+          <button class="tile" data-entity="${tomorrowId}">
+            <span class="small muted">${this._t("forecast_tomorrow")}</span>
+            <span class="tile-value">${this._num(tomorrowKwh)}<span class="tile-unit"> kWh</span></span>
+            ${nSources ? `<span class="small muted">${this._t("from_sources", { n: nSources })}</span>` : ""}
+          </button>
         </div>
 
-        <!-- Source bars -->
-        ${sourceList.length ? `
-        <div class="sources">
-          <div class="section-title">${this._t("sources_today")}</div>
-          ${sourceList.map(([, s]) => {
-            const rmse = this._effectiveRmse(s);
-            const exclTitle = s.excluded
-              ? this._tf("excluded_reason", { rmse: rmse != null ? this._fmt(rmse, 1) : "—" })
-              : "";
-            return `
-            <div class="source-row${s.excluded ? " excluded" : ""}" data-entity="${entityId}"${s.excluded ? ` title="${this._escape(exclTitle)}"` : ""}>
-              <div class="source-name">${SOURCE_SHORT[s.name] || s.name}</div>
-              <div class="bar-wrap">
-                <div class="bar" style="width:${((s.today_kwh || 0) / maxKwh * 100).toFixed(1)}%"></div>
-              </div>
-              <div class="source-kwh">
-                ${this._fmt(s.today_kwh, 2)} kWh
-                ${s.tomorrow_kwh != null ? `<div class="source-kwh-tmr">${this._fmt(s.tomorrow_kwh, 2)} kWh</div>` : ""}
-              </div>
-              <div class="source-weight">${s.excluded
-                ? `<span class="source-excl">${this._t("excluded")}</span>`
-                : s.weight != null ? this._t("weight") + " " + this._fmt(s.weight * 100, 0) + " %" : "—"}</div>
-            </div>`;
-          }).join("")}
-        </div>` : ""}
+        ${this._renderChart(series)}
+        ${this._renderSources(Object.entries(sources), entityId)}
+        ${this._renderDeviation(this._deviationSeries(history))}
 
-        <!-- Quality table -->
-        ${sourceList.length ? `
-        <div class="q-section">
-          <div class="section-title">${this._t("quality_accuracy")}</div>
-          <div class="q-header">
-            <span>${this._t("col_source")}</span><span class="q-col-label">${this._t("col_label")}</span><span>${this._t("col_rmse")}</span><span class="q-col-mae">${this._t("col_mae")}</span><span class="q-col-bias">${this._t("col_bias")}</span><span class="q-col-days">${this._t("col_days")}</span>
-          </div>
-          ${sourceList.map(([, s]) => {
-            const key    = (s.quality_label || "").toLowerCase();
-            const color  = QUALITY[key]?.color || "#94a3b8";
-            const qlabel = QUALITY[key] ? this._t(`quality_${key}`) : s.quality_label;
-            const bias   = s.bias_kwh != null
-              ? (s.bias_kwh > 0 ? "+" : "") + this._fmt(s.bias_kwh, 2) : "—";
-            const calShort = this._calShort(s);
-            const tooltip  = [
-              s.rmse_calibrated_kwh != null ? `${this._t("rmse_calibrated")}: ${this._fmt(s.rmse_calibrated_kwh, 2)} kWh` : null,
-              s.calibration_active === false ? this._t("cal_raw_hint") : null,
-            ].filter(Boolean).join("\n");
-            return `
-            <div class="q-row" data-entity="${entityId}"${tooltip ? ` title="${this._escape(tooltip)}"` : ""}>
-              <span class="q-name">${SOURCE_SHORT[s.name] || s.name}</span>
-              <span class="q-col-label">${s.quality_label
-                ? `<span class="badge" style="background:${hexRgba(color,0.25)};border:1px solid ${hexRgba(color,0.75)};color:${color}">${this._escape(qlabel)}</span>${calShort ? `<div class="q-cal">${calShort}</div>` : ""}`
-                : "—"}</span>
-              <span class="q-val">${this._fmt(s.rmse_kwh, 2)}</span>
-              <span class="q-val q-val-mae">${this._fmt(s.mae_kwh, 2)}</span>
-              <span class="q-val q-val-bias">${bias}</span>
-              <span class="q-days">${s.days_evaluated ?? "—"} ${this._t("days_short")}</span>
-            </div>`;
-          }).join("")}
-        </div>` : ""}
-
-        <!-- Sparkline / history -->
-        <div>
-          <div class="section-title">${this._t("history_title")}</div>
-          <div class="spark-wrap">
-            <svg viewBox="0 0 400 80" preserveAspectRatio="none">
-              ${this._sparkline(history)}
-            </svg>
-            <div class="legend">
-              <div class="legend-item">
-                <div class="legend-dot" style="background:#f59e0b;border-radius:2px"></div>${this._t("over_forecast")}
-              </div>
-              <div class="legend-item">
-                <div class="legend-dot" style="background:#60a5fa;border-radius:2px"></div>${this._t("under_forecast")}
-              </div>
-            </div>
-          </div>
-        </div>
-
-      </div>`;
+      </div>
+      </ha-card>`;
 
     this._attachListeners();
-  }
-
-  static getStubConfig() {
-    return { entity: "sensor.solar_fusion_dach_forecast_today" };
   }
 }
 
@@ -535,12 +647,12 @@ if (!customElements.get("solar-fusion-card")) {
   window.customCards.push({
     type: "solar-fusion-card",
     name: "Solar Fusion Card",
-    description: "Fused PV forecast with source comparison, quality metrics, and history.",
+    description: "Fused PV forecast with hourly chart, source comparison, quality and history.",
   });
   console.info(
     `%c SOLAR-FUSION-CARD %c ${CARD_VERSION} `,
-    "color:#0f1117;background:#f59e0b;font-weight:700",
-    "color:#f59e0b;background:#0f1117",
+    "color:#fff;background:#ff9800;font-weight:700",
+    "color:#ff9800;background:transparent",
   );
 } else {
   console.warn(

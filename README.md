@@ -408,7 +408,14 @@ entity: sensor.solar_fusion_dach_forecast_today
 title: Solar Fusion Roof   # optional
 ```
 
-The card reads everything from the `Forecast – Today` sensor and finds `Forecast – Tomorrow` and `Diagnostics – PV Daily Production` by the same entity ID prefix. It shows today's yield, today's and tomorrow's forecast with uncertainty, the sources with their weights, the quality table and the forecast deviation of the last 14 days, in English or German.
+The card reads everything from the `Forecast – Today` sensor and finds `Forecast – Tomorrow` and `Diagnostics – PV Daily Production` by the same entity ID prefix. It shows:
+
+- today's yield (with the share of the forecast), today's forecast with its uncertainty and tomorrow's forecast,
+- an hourly chart for today or tomorrow: forecast per hour and, for today, the hourly yield from the recorder's long-term statistics of the PV daily meter,
+- the sources with quality label, daily forecast and weight (RMSE, MAE, bias and exclusion reason as tooltip),
+- the forecast deviation of the last 14 days with its average; tap or hover a bar for the day's value.
+
+Colours and font follow the Home Assistant theme (light, dark or custom); the card loads nothing from outside your instance. Texts are in English or German.
 
 **Switching from the HACS card** ([hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card), up to v0.1.14): existing cards keep working without changes. While the old card is still registered as a dashboard resource, Solar Fusion raises a repair issue. Then:
 
