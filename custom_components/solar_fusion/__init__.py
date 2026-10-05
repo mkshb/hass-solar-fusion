@@ -7,6 +7,7 @@ from datetime import date
 import voluptuous as vol
 
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -18,7 +19,7 @@ from .const import CONF_INSTANCE_NAME, DOMAIN, device_name
 from .coordinator import SolarForecastCoordinator, SolarFusionConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["sensor"]
+PLATFORMS = [Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
