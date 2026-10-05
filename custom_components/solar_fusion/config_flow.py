@@ -35,7 +35,8 @@ from .const import (
     SOLCAST_TODAY,
     SOLCAST_TOMORROW,
 )
-from .source_reader import detect_available_sources
+from .source_reader import detect_available_sources, resolve_entities
+from .validation import forecast_entity_error, pv_entity_error
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -138,8 +139,18 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "today": user_input.get(f"{source_id}_today", _DEFAULT_ENTITIES[source_id]["today"]),
                     "tomorrow": user_input.get(f"{source_id}_tomorrow", _DEFAULT_ENTITIES[source_id]["tomorrow"]),
                 }
-            self._data["entity_map"] = entity_map
-            return await self.async_step_settings()
+            errors = self._entity_errors(entity_map)
+            if not errors:
+                self._data["entity_map"] = entity_map
+                return await self.async_step_settings()
+            return self.async_show_form(
+                step_id="entities",
+                data_schema=self.add_suggested_values_to_schema(
+                    self._entities_schema(), user_input
+                ),
+                errors=errors,
+                description_placeholders=_ENTITIES_HINT,
+            )
 
         return self.async_show_form(
             step_id="entities",
@@ -147,15 +158,33 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             description_placeholders=_ENTITIES_HINT,
         )
 
+    def _entity_errors(self, entity_map: Dict[str, Dict]) -> Dict[str, str]:
+        """Fehler je Feld; geprüft wird die Entität, die der Reader liest."""
+        errors: Dict[str, str] = {}
+        for source_id, entities in entity_map.items():
+            resolved = resolve_entities(self.hass, source_id, entities)
+            if resolved is None:
+                continue
+            for day, entity_id in zip(("today", "tomorrow"), resolved):
+                if error := forecast_entity_error(self.hass, entity_id):
+                    errors[f"{source_id}_{day}"] = error
+        return errors
+
     async def async_step_settings(
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Step 3: PV production sensor(s); update interval only on first setup."""
         entry = self._reconfigure_entry
+        errors: Dict[str, str] = {}
         if user_input is not None:
             pv_entities: List[str] = [
                 e for e in user_input.get(CONF_PV_ENTITIES, []) if e
             ]
+            for entity_id in pv_entities:
+                if error := pv_entity_error(self.hass, entity_id):
+                    errors[CONF_PV_ENTITIES] = error
+                    break
+        if user_input is not None and not errors:
             self._data[CONF_PV_ENTITIES] = pv_entities
             self._data[CONF_PV_ENTITY] = pv_entities[0] if len(pv_entities) == 1 else ""
             title = _entry_title(self._data.get(CONF_INSTANCE_NAME, ""))
@@ -187,9 +216,13 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             fields[vol.Optional(CONF_UPDATE_INTERVAL, default=DEFAULT_UPDATE_INTERVAL)] = (
                 _update_interval_selector()
             )
+        schema = vol.Schema(fields)
+        if user_input is not None:
+            schema = self.add_suggested_values_to_schema(schema, user_input)
         return self.async_show_form(
             step_id="settings",
-            data_schema=vol.Schema(fields),
+            data_schema=schema,
+            errors=errors,
             description_placeholders={
                 "pv_hint": (
                     "Wähle einen oder mehrere PV-Produktionssensoren. "

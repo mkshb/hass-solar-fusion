@@ -17,6 +17,8 @@ def _register_sources(hass):
     reg.async_get_or_create("sensor", "open_meteo_solar_forecast", "om_today",
                             suggested_object_id="om_energy_production_today")
     set_sources(hass)
+    hass.states.async_set(PV, 12.3, {"unit_of_measurement": "kWh",
+                                     "state_class": "total_increasing"})
 
 
 async def _user_step(hass, sources, name="Dach"):

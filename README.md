@@ -87,8 +87,10 @@ The default entity IDs used by each integration are pre-filled. Adjust only if y
 
 **Open-Meteo entity discovery:** Open-Meteo Solar Forecast uses the same approach — Solar Fusion resolves its entities via the registry to avoid collisions with Forecast.Solar (both share the default name `sensor.energy_production_today`). Localised names (e.g. `_heute` / `_morgen` or `_energy_today` / `_energy_tomorrow`) are found automatically.
 
+The dialog checks the entities that will actually be read: they must exist, and a value present must be a number in kWh. An entity that is `unavailable` right now is accepted if its registered unit fits.
+
 ### Step 3 – Settings
-- **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
+- **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). Each must be an energy sensor in kWh or a power sensor in W or kW. This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
 - **Update interval**: How often Solar Fusion re-reads the source entities (default: 60 min).
 
 Name, sources, entities and PV sensors can be changed later via **Settings → Devices & Services → Solar Fusion → ⋮ → Reconfigure**. The tuning parameters are under **Configure**: the update interval, two weighting options:

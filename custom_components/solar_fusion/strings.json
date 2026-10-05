@@ -43,7 +43,12 @@
       }
     },
     "error": {
-      "no_sources": "Please select at least one source."
+      "no_sources": "Please select at least one source.",
+      "entity_not_found": "Entity not found. Check that the integration providing it is set up.",
+      "forecast_unit": "The forecast entity must state the daily energy in kWh.",
+      "forecast_not_numeric": "The forecast entity has no numeric value.",
+      "pv_unit": "Select an energy sensor in kWh or a power sensor in W or kW.",
+      "pv_not_numeric": "The PV sensor has no numeric value."
     },
     "abort": {
       "already_configured": "Solar Fusion is already configured.",
