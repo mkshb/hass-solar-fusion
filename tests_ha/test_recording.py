@@ -156,7 +156,8 @@ async def test_startup_reconciles_corrupted_history(hass_tz, freezer, hass_stora
     freezer.move_to(at("2026-10-04", 12))
     set_sources(hass)
     _, coord = await setup_entry(hass)
-    await hass.async_block_till_done()
+    # Der Abgleich läuft als Hintergrund-Task des Eintrags
+    await hass.async_block_till_done(wait_background_tasks=True)
     assert {r["actual_kwh"] for r in coord.history if r["date"] == DAY} == {25.0}
 
 
@@ -167,7 +168,7 @@ async def test_repair_history_action_with_date_range(hass_tz, freezer, hass_stor
     set_sources(hass)
     hass_storage[STORE_KEY] = _store()
     _, coord = await setup_entry(hass)
-    await hass.async_block_till_done()
+    await hass.async_block_till_done(wait_background_tasks=True)
 
     coord.history[:] = _bad_history(99.0) + [
         {"date": "2026-09-20", "source": "solcast", "forecast_kwh": 20.0, "actual_kwh": 11.0}]
