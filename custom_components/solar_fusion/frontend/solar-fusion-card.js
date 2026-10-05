@@ -64,6 +64,7 @@ const DEFAULT_LOCALE = {
   "avg_under":        "Ø −{v} kWh too low",
   "day_over":         "{date}: +{v} kWh too high",
   "day_under":        "{date}: −{v} kWh too low",
+  "day_none":         "{date}: no data",
   "no_history":       "No history data yet",
 };
 
@@ -158,7 +159,10 @@ const STYLES = `
   .labels { display: flex; gap: 4px; padding-left: 48px; margin-top: 4px; }
   .labels span { flex: 1; min-width: 0; font-size: 11px; text-align: center; white-space: nowrap; overflow: visible; color: var(--sf-secondary); }
   .labels span.now { color: var(--primary-text-color); font-weight: 500; }
-  .info { min-height: 16px; margin-top: 6px; font-size: 12px; color: var(--sf-secondary); }
+  .info {
+    height: 18px; line-height: 18px; margin-top: 6px; font-size: 12px; color: var(--sf-secondary);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
 
   /* Sources */
   .section-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
@@ -185,6 +189,7 @@ const STYLES = `
   .day .down { height: 32px; display: flex; align-items: flex-start; }
   .day .up > span { display: block; width: 100%; border-radius: 2px 2px 0 0; background: var(--sf-solar); }
   .day .down > span { display: block; width: 100%; border-radius: 0 0 2px 2px; background: var(--sf-under); }
+  .day.missing { cursor: default; }
   .day.selected { outline: 1px solid var(--sf-divider); outline-offset: 2px; border-radius: 2px; }
   .dev-dates { display: flex; justify-content: space-between; font-size: 11px; color: var(--sf-secondary); margin-top: 4px; }
   .empty { padding: 16px 0; text-align: center; font-size: 12px; color: var(--sf-secondary); }
@@ -214,6 +219,7 @@ class SolarFusionCard extends HTMLElement {
     this._actualHourly = {};    // {"HH": kWh} today, from recorder statistics
     this._statsFetched = 0;
     this._statsDate = null;
+    this._lastStates = null;    // state objects of the last render
   }
 
   // Load locale JSON from locales/<lang>.json next to the card file.
@@ -256,9 +262,14 @@ class SolarFusionCard extends HTMLElement {
         this._locale = locale;
         this._render();
       });
-    } else {
-      this._render();
+      return;
     }
+    // hass is set on every state change in Home Assistant; redraw only when
+    // one of the card's own entities changed (keeps hover and selection).
+    const states = [this._config.entity, `${this._prefix}_forecast_tomorrow`, this._actualId()]
+      .map(id => hass.states[id]);
+    if (this._lastStates && states.every((st, i) => st === this._lastStates[i])) return;
+    this._render();
   }
 
   getCardSize() {
@@ -343,20 +354,26 @@ class SolarFusionCard extends HTMLElement {
     return series;
   }
 
-  // [{date, deviation}] – mean morning forecast of the sources minus actual
+  // [{date, deviation}] for the last HISTORY_DAYS days up to yesterday –
+  // mean morning forecast of the sources minus actual; null without a record
   _deviationSeries(history) {
     const byDate = {};
     for (const r of history) {
       if (!byDate[r.date]) byDate[r.date] = { forecasts: [], actual: r.actual_kwh };
       byDate[r.date].forecasts.push(r.forecast_kwh);
     }
-    return Object.entries(byDate)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .slice(-HISTORY_DAYS)
-      .map(([date, v]) => ({
+    const points = [];
+    for (let k = HISTORY_DAYS; k >= 1; k--) {
+      const d = new Date();
+      d.setDate(d.getDate() - k);
+      const date = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      const v = byDate[date];
+      points.push({
         date,
-        deviation: v.forecasts.reduce((a, b) => a + b, 0) / (v.forecasts.length || 1) - v.actual,
-      }));
+        deviation: v ? v.forecasts.reduce((a, b) => a + b, 0) / (v.forecasts.length || 1) - v.actual : null,
+      });
+    }
+    return points;
   }
 
   // ── Formatting ──────────────────────────────────────────────────────────
@@ -435,18 +452,21 @@ class SolarFusionCard extends HTMLElement {
         this._render();
       });
     });
-    root.querySelectorAll("[data-hour]").forEach(el => {
-      el.addEventListener("click", () => {
-        this._selectedHour = this._selectedHour === el.dataset.hour ? null : el.dataset.hour;
-        this._render();
+    // Selecting a bar only changes classes and the info line: no redraw,
+    // so the card keeps its size.
+    const select = (attr, prop, info) => {
+      root.querySelectorAll(`[data-${attr}]`).forEach(el => {
+        el.addEventListener("click", () => {
+          const value = this[prop] === el.dataset[attr] ? null : el.dataset[attr];
+          this[prop] = value;
+          root.querySelectorAll(`[data-${attr}]`).forEach(b => b.classList.toggle("selected", b.dataset[attr] === value));
+          const line = root.querySelector(`.info[data-info="${info}"]`);
+          if (line) line.textContent = value ? el.title : "";
+        });
       });
-    });
-    root.querySelectorAll("[data-dev]").forEach(el => {
-      el.addEventListener("click", () => {
-        this._selectedDay = this._selectedDay === el.dataset.dev ? null : el.dataset.dev;
-        this._render();
-      });
-    });
+    };
+    select("hour", "_selectedHour", "chart");
+    select("dev", "_selectedDay", "dev");
   }
 
   // ── Rendering ───────────────────────────────────────────────────────────
@@ -503,7 +523,7 @@ class SolarFusionCard extends HTMLElement {
           </div>
         </div>
         <div class="labels">${labels}</div>
-        <div class="info">${selected ? this._escape(tip(selected)) : ""}</div>
+        <div class="info" data-info="chart">${selected ? this._escape(tip(selected)) : ""}</div>
       </div>`;
   }
 
@@ -526,19 +546,22 @@ class SolarFusionCard extends HTMLElement {
 
   _renderDeviation(points) {
     const title = `<div class="section-title" style="margin:0">${this._t("history_title", { n: HISTORY_DAYS })}</div>`;
-    if (!points.length) {
+    const known = points.filter(p => p.deviation != null);
+    if (!known.length) {
       return `<div><div class="dev-head">${title}</div><div class="empty">${this._t("no_history")}</div></div>`;
     }
-    const avg = points.reduce((a, p) => a + p.deviation, 0) / points.length;
+    const avg = known.reduce((a, p) => a + p.deviation, 0) / known.length;
     const avgText = this._t(avg >= 0 ? "avg_over" : "avg_under", { v: this._num(Math.abs(avg)) });
-    const maxDev = Math.max(...points.map(p => Math.abs(p.deviation)), 0.5);
-    const tip = p => this._t(p.deviation >= 0 ? "day_over" : "day_under", {
-      date: this._date(p.date), v: this._num(Math.abs(p.deviation)),
-    });
+    const maxDev = Math.max(...known.map(p => Math.abs(p.deviation)), 0.5);
+    const tip = p => p.deviation == null
+      ? this._t("day_none", { date: this._date(p.date) })
+      : this._t(p.deviation >= 0 ? "day_over" : "day_under", {
+        date: this._date(p.date), v: this._num(Math.abs(p.deviation)),
+      });
     const days = points.map(p => {
-      const h = Math.max(2, Math.round(Math.abs(p.deviation) / maxDev * 30));
+      const h = Math.max(2, Math.round(Math.abs(p.deviation ?? 0) / maxDev * 30));
       const label = this._escape(tip(p));
-      return `<button class="day${this._selectedDay === p.date ? " selected" : ""}" data-dev="${p.date}" title="${label}" aria-label="${label}">
+      return `<button class="day${p.deviation == null ? " missing" : ""}${this._selectedDay === p.date ? " selected" : ""}" data-dev="${p.date}" title="${label}" aria-label="${label}">
         <span class="up">${p.deviation > 0 ? `<span style="height:${h}px"></span>` : ""}</span>
         <span class="down">${p.deviation < 0 ? `<span style="height:${h}px"></span>` : ""}</span>
       </button>`;
@@ -549,12 +572,14 @@ class SolarFusionCard extends HTMLElement {
         <div class="dev-head">${title}<span class="small muted">${avgText}</span></div>
         <div class="dev">${days}</div>
         <div class="dev-dates"><span>${this._date(points[0].date)}</span><span>${this._date(points[points.length - 1].date)}</span></div>
-        <div class="info">${selected ? this._escape(tip(selected)) : ""}</div>
+        <div class="info" data-info="dev">${selected ? this._escape(tip(selected)) : ""}</div>
       </div>`;
   }
 
   _render() {
     if (!this._config || !this._hass) return;
+    this._lastStates = [this._config.entity, `${this._prefix}_forecast_tomorrow`, this._actualId()]
+      .map(id => this._hass.states[id]);
 
     const entityId   = this._config.entity;  // forecast_today – provides all attributes
     const tomorrowId = `${this._prefix}_forecast_tomorrow`;

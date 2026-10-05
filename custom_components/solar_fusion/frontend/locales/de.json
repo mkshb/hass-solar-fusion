@@ -31,5 +31,6 @@
   "avg_under": "Ø −{v} kWh zu niedrig",
   "day_over": "{date}: +{v} kWh zu hoch",
   "day_under": "{date}: −{v} kWh zu niedrig",
+  "day_none": "{date}: keine Daten",
   "no_history": "Noch keine Verlaufsdaten"
 }
