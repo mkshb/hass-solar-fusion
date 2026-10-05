@@ -100,6 +100,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._shading_attempted: Dict[str, datetime] = {}
         # {source_id: bool} – letzte Kalibrierungs-Entscheidung (Hysterese) – persisted
         self._calibration_state: Dict[str, bool] = {}
+        # Quellen, deren Ausfall schon geloggt ist (einmal beim Wegfall, einmal bei Rückkehr)
+        self._unavailable_sources: set[str] = set()
 
         super().__init__(
             hass,
@@ -199,6 +201,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             try:
                 reading = read_source(self.hass, source_id, source_entity_map)
                 readings.append(reading)
+                if source_id in self._unavailable_sources:
+                    self._unavailable_sources.discard(source_id)
+                    _LOGGER.info(
+                        "%s is available again", SOURCE_NAMES.get(source_id, source_id)
+                    )
                 _LOGGER.debug(
                     "Read %s: today=%.2f kWh, tomorrow=%.2f kWh",
                     SOURCE_NAMES.get(source_id, source_id),
@@ -206,7 +213,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                     reading.tomorrow_kwh,
                 )
             except SourceUnavailable as err:
-                _LOGGER.warning("%s", err)
+                if source_id in self._unavailable_sources:
+                    _LOGGER.debug("%s", err)
+                else:
+                    self._unavailable_sources.add(source_id)
+                    _LOGGER.warning("%s", err)
                 missing.append(source_id)
 
         if not readings:

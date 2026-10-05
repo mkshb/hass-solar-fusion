@@ -5,7 +5,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
 
-from common import DOMAIN, ENTRY_ID, STORE_KEY, make_entry, set_sources, setup_entry, state
+from common import DOMAIN, ENTRY_ID, SC, STORE_KEY, make_entry, set_sources, setup_entry, state
 
 
 async def test_forecast_sensors_have_no_invalid_state_class(berlin, caplog):
@@ -108,3 +108,24 @@ async def test_large_attributes_are_not_recorded(berlin):
         attrs = recorded[current.entity_id][0].attributes
         assert not unrecorded & set(attrs), suffix
         assert "friendly_name" in attrs
+
+
+async def test_missing_source_is_logged_once(berlin, caplog):
+    hass = berlin
+    set_sources(hass)
+    _, coord = await setup_entry(hass)
+    hass.states.async_set(SC, "unavailable")
+    caplog.clear()
+    for _ in range(3):
+        await coord.async_refresh()
+    warnings = [r for r in caplog.records
+                if r.levelname == "WARNING" and SC in r.getMessage()]
+    assert len(warnings) == 1
+    assert coord.data["missing_sources"] == ["solcast"]
+
+    set_sources(hass)
+    caplog.clear()
+    await coord.async_refresh()
+    await coord.async_refresh()
+    assert caplog.text.count("Solcast PV Forecast is available again") == 1
+    assert coord.data["missing_sources"] == []
