@@ -81,7 +81,23 @@ async def async_setup_entry(
 # Built-in daily PV meter
 # ──────────────────────────────────────────────────────────────────────────────
 
+# Leistungssensoren (W/kW) werden über die Zeit integriert
+_POWER_TO_KW = {"W": 0.001, "kW": 1.0}
+
+
+def _power_factor(state) -> Optional[float]:
+    """kW je Einheit, wenn ``state`` ein Leistungssensor ist, sonst None."""
+    return _POWER_TO_KW.get(state.attributes.get("unit_of_measurement"))
+
+
 class PVDailyMeterSensor(RestoreEntity, SensorEntity):
+    """Tagesertrag aus einem oder mehreren PV-Sensoren.
+
+    Energiezähler: Zuwachs seit Tagesbeginn (oder Tageswert bei last_reset
+    heute). Leistungssensoren: Integral der Leistung seit Mitternacht (links,
+    wie der Integral-Helfer). Nach einem Neustart ohne gespeichertes Integral
+    von heute wird es aus der Langzeitstatistik bis jetzt nachgeholt.
+    """
     _attr_has_entity_name = True
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
@@ -97,7 +113,9 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._attr_device_info = _device(entry)
         self._value: Optional[float] = None
         self._source_state: Dict[str, Dict] = {
-            eid: {"start": None, "state_class": None} for eid in source_entity_ids
+            eid: {"start": None, "state_class": None, "power": None,
+                  "energy": 0.0, "last_kw": None, "last_ts": None}
+            for eid in source_entity_ids
         }
         self._today: date = dt_util.now().date()
 
@@ -128,6 +146,10 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
                     saved = last.attributes.get(f"day_start_{eid.replace('.', '_')}")
                     if saved is not None:
                         self._source_state[eid]["start"] = float(saved)
+                    energy = last.attributes.get(f"day_energy_{eid.replace('.', '_')}")
+                    if energy is not None:
+                        self._source_state[eid]["energy"] = float(energy)
+                        self._source_state[eid]["restored"] = True
             except (ValueError, TypeError):
                 pass
 
@@ -140,6 +162,8 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             self._value = None
             for src in self._source_state.values():
                 src["start"] = None
+                src["energy"] = 0.0
+                src.pop("restored", None)
 
         self.async_on_remove(
             async_track_state_change_event(
@@ -158,6 +182,15 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
                 try:
                     val = float(state.state)
                     src = self._source_state[eid]
+                    factor = _power_factor(state)
+                    if factor is not None:
+                        src["power"] = factor
+                        if not src.pop("restored", False):
+                            src["energy"] = await self._async_energy_so_far(eid)
+                        src["last_kw"] = val * factor
+                        src["last_ts"] = dt_util.utcnow()
+                        recalculate = True
+                        continue
                     src["state_class"] = state.attributes.get("state_class", "")
                     if self._last_reset_is_today(state):
                         if src["start"] != 0.0:
@@ -173,11 +206,60 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             self._value = round(self._calculate_total(), 3)
             self.async_write_ha_state()
 
+    async def _async_energy_so_far(self, entity_id: str) -> float:
+        """Integral eines Leistungssensors seit Mitternacht aus der Langzeitstatistik (kWh).
+
+        Volle Stunden aus den Stundenmitteln, die laufende Stunde aus den
+        5-Minuten-Mitteln. Ohne Statistik 0 (gezählt wird dann ab jetzt).
+        """
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import statistics_during_period
+
+            now = dt_util.utcnow()
+            midnight = dt_util.as_utc(dt_util.start_of_local_day())
+            hour = now.replace(minute=0, second=0, microsecond=0)
+            total = 0.0
+            for period, start, end, hours in (
+                ("hour", midnight, hour, 1.0),
+                ("5minute", max(hour, midnight), now, 5 / 60),
+            ):
+                if end <= start:
+                    continue
+                stats = await get_instance(self.hass).async_add_executor_job(
+                    statistics_during_period, self.hass, start, end, {entity_id},
+                    period, {"power": "kW"}, {"mean"},
+                )
+                total += sum(
+                    max(0.0, row["mean"]) * hours
+                    for row in stats.get(entity_id, []) if row.get("mean") is not None
+                )
+            return total
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.debug("PV daily meter: no statistics for %s: %s", entity_id, err)
+            return 0.0
+
+    @staticmethod
+    def _integrate(src: Dict, now: datetime) -> None:
+        """Leistung seit der letzten Änderung aufsummieren (Rechteck links)."""
+        if src["last_kw"] is not None and src["last_ts"] is not None:
+            hours = (now - src["last_ts"]).total_seconds() / 3600
+            src["energy"] += max(0.0, src["last_kw"]) * max(0.0, hours)
+        src["last_ts"] = now
+
     @callback
     def _handle_source_change(self, event) -> None:
         entity_id = event.data.get("entity_id")
         new_state = event.data.get("new_state")
-        if not entity_id or new_state is None or new_state.state in ("unknown", "unavailable"):
+        if not entity_id or new_state is None:
+            return
+        src = self._source_state[entity_id]
+        if src["power"] is not None or (
+            new_state.state not in ("unknown", "unavailable") and _power_factor(new_state) is not None
+        ):
+            self._handle_power_change(src, new_state)
+            return
+        if new_state.state in ("unknown", "unavailable"):
             return
         try:
             current_val = float(new_state.state)
@@ -197,9 +279,27 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         self._value = round(self._calculate_total(), 3)
         self.async_write_ha_state()
 
+    def _handle_power_change(self, src: Dict, new_state) -> None:
+        if dt_util.now().date() != self._today:
+            self._reset()
+        now = dt_util.utcnow()
+        self._integrate(src, now)
+        try:
+            factor = _power_factor(new_state) or src["power"]
+            src["power"] = factor
+            src["last_kw"] = float(new_state.state) * factor
+        except (ValueError, TypeError):
+            src["last_kw"] = None   # unavailable: Lücke nicht mitzählen
+        self._value = round(self._calculate_total(), 3)
+        self.async_write_ha_state()
+
     def _calculate_total(self) -> float:
         total = 0.0
         for eid in self._source_entity_ids:
+            src = self._source_state[eid]
+            if src["power"] is not None:
+                total += src["energy"]
+                continue
             state = self.hass.states.get(eid)
             if state is None or state.state in ("unknown", "unavailable"):
                 continue
@@ -228,6 +328,11 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
         for eid in self._source_entity_ids:
             state = self.hass.states.get(eid)
             src = self._source_state[eid]
+            if src["power"] is not None:
+                # Bis jetzt gehört zum Vortag; neuer Tag beginnt bei 0
+                src["energy"] = 0.0
+                src["last_ts"] = dt_util.utcnow()
+                continue
             if state and state.state not in ("unknown", "unavailable"):
                 try:
                     val = float(state.state)
@@ -255,8 +360,11 @@ class PVDailyMeterSensor(RestoreEntity, SensorEntity):
             "source_entities": self._source_entity_ids,
         }
         for eid in self._source_entity_ids:
-            key = f"day_start_{eid.replace('.', '_')}"
-            attrs[key] = self._source_state[eid]["start"]
+            src = self._source_state[eid]
+            if src["power"] is not None:
+                attrs[f"day_energy_{eid.replace('.', '_')}"] = round(src["energy"], 4)
+            else:
+                attrs[f"day_start_{eid.replace('.', '_')}"] = src["start"]
         return attrs
 
 

@@ -2,11 +2,16 @@
 from datetime import timedelta
 
 import pytest
+from homeassistant.components.recorder.models import StatisticMeanType
+from homeassistant.components.recorder.statistics import async_import_statistics
 from homeassistant.core import State
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import (
     async_fire_time_changed,
     mock_restore_cache,
+)
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
 )
 
 from common import DOMAIN, ENTRY_ID, PV, at, make_entry, set_sources
@@ -113,3 +118,64 @@ async def test_restart_after_midnight_with_state_from_yesterday(berlin, freezer)
     state = hass.states.get(METER)
     assert float(state.state) == 0.0
     assert state.attributes["date"] == "2026-10-04"
+
+
+WATTS = {"unit_of_measurement": "W", "state_class": "measurement", "device_class": "power"}
+
+
+async def test_power_source_is_integrated(berlin, freezer):
+    # Früher wurde der Momentanwert in W als kWh übernommen
+    hass = berlin
+    await _setup(hass, [PV], {PV: (2000.0, WATTS)})
+    assert _meter(hass) == 0.0
+    freezer.tick(timedelta(minutes=30))
+    await _set(hass, PV, 1000.0, WATTS)
+    assert _meter(hass) == pytest.approx(1.0)      # 2 kW × 0,5 h
+    freezer.tick(timedelta(hours=1))
+    await _set(hass, PV, "unavailable", {})
+    assert _meter(hass) == pytest.approx(2.0)      # + 1 kW × 1 h
+    freezer.tick(timedelta(hours=1))
+    await _set(hass, PV, 500.0, WATTS)
+    assert _meter(hass) == pytest.approx(2.0)      # Lücke zählt nicht
+
+
+async def test_power_source_resets_at_midnight(berlin, freezer):
+    hass = berlin
+    await _setup(hass, [PV], {PV: (1000.0, WATTS)})
+    freezer.move_to(at("2026-10-04", 23, 59))
+    await _set(hass, PV, 0.0, WATTS)
+    assert _meter(hass) > 11.0
+    freezer.move_to(at("2026-10-05", 0, 0) + timedelta(seconds=5))
+    async_fire_time_changed(hass)
+    await hass.async_block_till_done()
+    assert _meter(hass) == 0.0
+    freezer.tick(timedelta(hours=1))
+    await _set(hass, PV, 100.0, WATTS)
+    assert _meter(hass) == 0.0
+    freezer.tick(timedelta(hours=2))
+    await _set(hass, PV, 0.0, WATTS)
+    assert _meter(hass) == pytest.approx(0.2)
+
+
+async def test_power_source_catches_up_from_statistics_after_restart(berlin, freezer):
+    # Ohne gespeichertes Integral von heute (z. B. erster Start mit dem Sensor):
+    # bisheriger Tagesertrag aus den Stundenmitteln, 3 h × 1 kW
+    hass = berlin
+    async_import_statistics(hass, {
+        "mean_type": StatisticMeanType.ARITHMETIC, "has_sum": False, "name": None,
+        "source": "recorder", "statistic_id": PV, "unit_class": "power",
+        "unit_of_measurement": "W",
+    }, [{"start": at("2026-10-04", h), "mean": 1000.0 if h in (9, 10, 11) else 0.0,
+         "min": 0.0, "max": 1000.0} for h in range(12)])
+    await async_wait_recording_done(hass)
+    await _setup(hass, [PV], {PV: (1500.0, WATTS)})
+    assert _meter(hass) == pytest.approx(3.0)
+
+
+async def test_power_source_restores_integral(berlin):
+    hass = berlin
+    mock_restore_cache(hass, [State(METER, "4.2", {
+        "date": "2026-10-04", "day_energy_sensor_pv_energy": 4.2,
+    })])
+    await _setup(hass, [PV], {PV: (1500.0, WATTS)})
+    assert _meter(hass) == pytest.approx(4.2)
