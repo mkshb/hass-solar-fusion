@@ -41,7 +41,7 @@ from .const import (
     SOURCE_NAMES,
     device_name,
 )
-from .coordinator import SolarForecastCoordinator
+from .coordinator import SolarForecastCoordinator, SolarFusionConfigEntry
 
 _LOGGER = logging.getLogger(__name__)
 CONF_SOURCES_KEY = "sources"
@@ -49,10 +49,10 @@ CONF_SOURCES_KEY = "sources"
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
+    config_entry: SolarFusionConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    coordinator: SolarForecastCoordinator = hass.data[DOMAIN][config_entry.entry_id]
+    coordinator = config_entry.runtime_data
 
     entities: List[SensorEntity] = [
         FusedForecastSensor(coordinator, config_entry, "today"),

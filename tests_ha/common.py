@@ -121,7 +121,7 @@ async def setup_entry(hass, **extra):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry, hass.data[DOMAIN][ENTRY_ID]
+    return entry, entry.runtime_data
 
 
 def state(hass, suffix: str):

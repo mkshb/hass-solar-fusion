@@ -8,9 +8,8 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant
-
-from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,10 +31,11 @@ async def async_get_solar_forecast(
         "async_get_solar_forecast called for entry %s", config_entry_id
     )
 
-    coordinator = hass.data.get(DOMAIN, {}).get(config_entry_id)
-    if coordinator is None:
-        _LOGGER.debug("No coordinator found for %s", config_entry_id)
+    entry = hass.config_entries.async_get_entry(config_entry_id)
+    if entry is None or entry.state is not ConfigEntryState.LOADED:
+        _LOGGER.debug("No loaded entry found for %s", config_entry_id)
         return None
+    coordinator = entry.runtime_data
     if coordinator.data is None:
         _LOGGER.debug("Coordinator has no data yet for %s", config_entry_id)
         return None

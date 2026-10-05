@@ -52,6 +52,9 @@ _SNAPSHOT_HOUR = 6
 _RETRO_LATEST_HOUR = 9
 
 
+type SolarFusionConfigEntry = ConfigEntry[SolarForecastCoordinator]
+
+
 class _SolarFusionStore(Store):
     async def _async_migrate_func(self, old_major_version, old_minor_version, old_data):
         return migrate_storage(old_major_version, old_data)
@@ -73,7 +76,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     updates are ignored for accuracy tracking.
     """
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: SolarFusionConfigEntry) -> None:
         self._config = entry.data
         self._entry = entry
         self._store = _SolarFusionStore(hass, STORAGE_VERSION, STORAGE_KEY + "_" + entry.entry_id)
@@ -144,7 +147,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # Reconcile history against the recorder (fixes legacy carryover corruption)
         if self._history:
-            self.hass.async_create_task(self._async_reconcile_history_on_startup())
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_reconcile_history_on_startup(),
+                f"{DOMAIN} reconcile history",
+            )
 
         # Register 06:00 snapshot trigger
         self.config_entry.async_on_unload(

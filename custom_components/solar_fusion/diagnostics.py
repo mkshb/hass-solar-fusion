@@ -3,14 +3,13 @@ from __future__ import annotations
 
 from typing import Any
 
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN
+from .coordinator import SolarFusionConfigEntry
 
 
 async def async_get_config_entry_diagnostics(
-    hass: HomeAssistant, entry: ConfigEntry
+    hass: HomeAssistant, entry: SolarFusionConfigEntry
 ) -> dict[str, Any]:
     """
     Return diagnostics for a Solar Fusion config entry.
@@ -19,7 +18,7 @@ async def async_get_config_entry_diagnostics(
     Contains all data needed to debug forecast, calibration, and history issues.
     No sensitive data is stored or redacted.
     """
-    coordinator = hass.data[DOMAIN][entry.entry_id]
+    coordinator = entry.runtime_data
     data = coordinator.data or {}
 
     return {

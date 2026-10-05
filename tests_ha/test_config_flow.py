@@ -92,7 +92,7 @@ async def test_options_flow_updates_entry_and_reloads(berlin):
     assert entry.data["horizon_sources"] == ["open_meteo_solar_forecast"]
     assert entry.data["exclusion_factor"] == 2.5 and entry.data["min_eval_days"] == 5
     # Neu geladen: neuer Coordinator mit den neuen Einstellungen
-    new = hass.data[DOMAIN][entry.entry_id]
+    new = entry.runtime_data
     assert new is not coord
     assert new.shading_settings["learn"] is True
     assert new.shading_settings["horizon_sources"] == ["open_meteo_solar_forecast"]
