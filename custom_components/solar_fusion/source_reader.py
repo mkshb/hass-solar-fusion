@@ -132,6 +132,14 @@ def _domain_has_states(hass: HomeAssistant, registry, domain: str) -> bool:
 # Per-source readers
 # ──────────────────────────────────────────────────────────────────────────────
 
+def _resolve_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> tuple[str, str]:
+    """Forecast.Solar-Entitäten (heute, morgen): Vorgabe oder Standardname."""
+    return (
+        entity_map.get("today", FORECAST_SOLAR_TODAY),
+        entity_map.get("tomorrow", FORECAST_SOLAR_TOMORROW),
+    )
+
+
 def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceReading:
     """
     Read from the built-in Forecast.Solar integration.
@@ -145,8 +153,7 @@ def _read_forecast_solar(hass: HomeAssistant, entity_map: Dict[str, str]) -> Sou
     Die Core-Integration setzt dieses Attribut nicht; Stundenwerte gibt es nur,
     wenn eine eigene Entität es bereitstellt.
     """
-    today_id = entity_map.get("today", FORECAST_SOLAR_TODAY)
-    tomorrow_id = entity_map.get("tomorrow", FORECAST_SOLAR_TOMORROW)
+    today_id, tomorrow_id = _resolve_forecast_solar(hass, entity_map)
 
     today_state = _require_state(hass, today_id, SOURCE_FORECAST_SOLAR)
     tomorrow_state = _require_state(hass, tomorrow_id, SOURCE_FORECAST_SOLAR)
@@ -226,18 +233,7 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
     to avoid reading the same entity as Forecast.Solar when both share the
     default name 'sensor.energy_production_today'.
     """
-    # Always resolve via entity registry to avoid reading Forecast.Solar entities.
-    # Both integrations share the same default entity name, so the registry lookup
-    # is the only reliable way to get the correct Open-Meteo entity.
-    # Entity map values override the registry result only when explicitly set to
-    # a value different from the ambiguous default constant.
-    today_id, tomorrow_id = _find_open_meteo_entities(hass)
-    override_today = entity_map.get("today", "")
-    override_tomorrow = entity_map.get("tomorrow", "")
-    if override_today and override_today != OPEN_METEO_TODAY:
-        today_id = override_today
-    if override_tomorrow and override_tomorrow != OPEN_METEO_TOMORROW:
-        tomorrow_id = override_tomorrow
+    today_id, tomorrow_id = _resolve_open_meteo(hass, entity_map)
 
     today_state = _require_state(hass, today_id, SOURCE_OPEN_METEO)
     tomorrow_state = _require_state(hass, tomorrow_id, SOURCE_OPEN_METEO)
@@ -259,6 +255,25 @@ def _read_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceR
         hourly_today=hourly_today,
         hourly_tomorrow=hourly_tomorrow,
     )
+
+
+def _resolve_open_meteo(hass: HomeAssistant, entity_map: Dict[str, str]) -> tuple[str, str]:
+    """Open-Meteo-Entitäten (heute, morgen).
+
+    Always resolve via entity registry to avoid reading Forecast.Solar entities.
+    Both integrations share the same default entity name, so the registry lookup
+    is the only reliable way to get the correct Open-Meteo entity.
+    Entity map values override the registry result only when explicitly set to
+    a value different from the ambiguous default constant.
+    """
+    today_id, tomorrow_id = _find_open_meteo_entities(hass)
+    override_today = entity_map.get("today", "")
+    override_tomorrow = entity_map.get("tomorrow", "")
+    if override_today and override_today != OPEN_METEO_TODAY:
+        today_id = override_today
+    if override_tomorrow and override_tomorrow != OPEN_METEO_TOMORROW:
+        tomorrow_id = override_tomorrow
+    return today_id, tomorrow_id
 
 
 def _open_meteo_hourly_attr(state) -> dict:
@@ -305,6 +320,18 @@ def _find_solcast_entities(hass: HomeAssistant) -> tuple[Optional[str], Optional
     return today_id or SOLCAST_TODAY, tomorrow_id or SOLCAST_TOMORROW
 
 
+def _resolve_solcast(hass: HomeAssistant, entity_map: Dict[str, str]) -> tuple[str, str]:
+    """Solcast-Entitäten (heute, morgen).
+
+    Prefer user-configured overrides, then registry lookup, then hardcoded defaults.
+    """
+    if entity_map.get("today") and entity_map.get("tomorrow"):
+        return entity_map["today"], entity_map["tomorrow"]
+    today_id, tomorrow_id = _find_solcast_entities(hass)
+    # Allow partial override
+    return entity_map.get("today") or today_id, entity_map.get("tomorrow") or tomorrow_id
+
+
 def _read_solcast(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceReading:
     """
     Read from the Solcast PV Forecast HACS integration.
@@ -312,15 +339,7 @@ def _read_solcast(hass: HomeAssistant, entity_map: Dict[str, str]) -> SourceRead
     Entity IDs are resolved via the entity registry so localised names
     (e.g. German: prognose_heute / prognose_morgen) are found automatically.
     """
-    # Prefer user-configured overrides, then registry lookup, then hardcoded defaults
-    if entity_map.get("today") and entity_map.get("tomorrow"):
-        today_id = entity_map["today"]
-        tomorrow_id = entity_map["tomorrow"]
-    else:
-        today_id, tomorrow_id = _find_solcast_entities(hass)
-        # Allow partial override
-        today_id = entity_map.get("today") or today_id
-        tomorrow_id = entity_map.get("tomorrow") or tomorrow_id
+    today_id, tomorrow_id = _resolve_solcast(hass, entity_map)
 
     today_state = _require_state(hass, today_id, SOURCE_SOLCAST)
     tomorrow_state = _require_state(hass, tomorrow_id, SOURCE_SOLCAST)
@@ -462,17 +481,25 @@ def _normalise_ts(ts_raw) -> str:
 # Rekonstruktion aus der Recorder-Historie (rückwirkendes Lernen)
 # ──────────────────────────────────────────────────────────────────────────────
 
+def resolve_entities(
+    hass: HomeAssistant, source_id: str, entity_map: Dict[str, str]
+) -> Optional[tuple[str, str]]:
+    """Entitäten (heute, morgen), die ``read_source`` für eine Quelle liest."""
+    resolver = _RESOLVERS.get(source_id)
+    return resolver(hass, entity_map) if resolver else None
+
+
 def today_entity_id(hass: HomeAssistant, source_id: str, entity_map: Dict[str, str]) -> Optional[str]:
     """Entität mit der Heute-Prognose einer Quelle (gleiche Auflösung wie beim Lesen)."""
-    if source_id == SOURCE_FORECAST_SOLAR:
-        return entity_map.get("today", FORECAST_SOLAR_TODAY)
-    if source_id == SOURCE_OPEN_METEO:
-        today_id, _ = _find_open_meteo_entities(hass)
-        override = entity_map.get("today", "")
-        return override if override and override != OPEN_METEO_TODAY else today_id
-    if source_id == SOURCE_SOLCAST:
-        return entity_map.get("today") or _find_solcast_entities(hass)[0]
-    return None
+    resolved = resolve_entities(hass, source_id, entity_map)
+    return resolved[0] if resolved else None
+
+
+_RESOLVERS = {
+    SOURCE_FORECAST_SOLAR: _resolve_forecast_solar,
+    SOURCE_OPEN_METEO: _resolve_open_meteo,
+    SOURCE_SOLCAST: _resolve_solcast,
+}
 
 
 def hourly_from_attributes(source_id: str, attributes) -> HourlyWh:
