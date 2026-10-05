@@ -301,7 +301,8 @@ class SolarFusionCard extends HTMLElement {
   }
 
   // Hourly yield of today from the recorder's long-term statistics of the
-  // PV daily meter (statistics are written after each hour ends).
+  // PV daily meter: completed hours from the hourly, the running hour from
+  // the 5-minute statistics (both are written after each period ends).
   async _maybeFetchStats() {
     const today = this._todayIso();
     if (this._statsDate === today && Date.now() - this._statsFetched < STATS_REFRESH_MS) return;
@@ -311,20 +312,24 @@ class SolarFusionCard extends HTMLElement {
     this._statsDate = today;
     const start = new Date();
     start.setHours(0, 0, 0, 0);
+    const hourStart = new Date();
+    hourStart.setMinutes(0, 0, 0);
+    const query = (period, from) => this._hass.callWS({
+      type: "recorder/statistics_during_period",
+      start_time: from.toISOString(),
+      statistic_ids: [this._actualId()],
+      period,
+      types: ["change"],
+      units: { energy: "kWh" },
+    });
     try {
-      const result = await this._hass.callWS({
-        type: "recorder/statistics_during_period",
-        start_time: start.toISOString(),
-        statistic_ids: [this._actualId()],
-        period: "hour",
-        types: ["change"],
-        units: { energy: "kWh" },
-      });
+      const [hours, minutes] = await Promise.all([query("hour", start), query("5minute", hourStart)]);
       const hourly = {};
-      for (const row of result?.[this._actualId()] || []) {
+      for (const row of [...(hours?.[this._actualId()] || []), ...(minutes?.[this._actualId()] || [])]) {
         const begin = new Date(row.start);
         if (row.change == null || begin < start) continue;
-        hourly[String(begin.getHours()).padStart(2, "0")] = Math.max(0, row.change);
+        const key = String(begin.getHours()).padStart(2, "0");
+        hourly[key] = (hourly[key] || 0) + Math.max(0, row.change);
       }
       this._actualHourly = hourly;
       this._render();
@@ -334,7 +339,7 @@ class SolarFusionCard extends HTMLElement {
   }
 
   // [{hour, fc, ac}] in kWh for the chart; today includes the running hour
-  _hourlySeries(attrs, tomorrowAttrs, actualKwh) {
+  _hourlySeries(attrs, tomorrowAttrs) {
     const isToday = this._day === "today";
     const source = (isToday ? attrs.hourly_forecast_wh : tomorrowAttrs?.hourly_forecast_wh) || {};
     const fc = {};
@@ -347,16 +352,8 @@ class SolarFusionCard extends HTMLElement {
     for (const [slot, wh] of Object.entries(unshaded)) {
       us[slot.slice(11, 13)] = (Number(wh) || 0) / 1000;
     }
-    const ac = {};
-    if (isToday) {
-      Object.assign(ac, this._actualHourly);
-      // Running hour: total so far minus the completed hours
-      const nowHour = String(new Date().getHours()).padStart(2, "0");
-      if (actualKwh != null && !(nowHour in ac)) {
-        const done = Object.values(ac).reduce((a, b) => a + b, 0);
-        if (actualKwh - done > 0) ac[nowHour] = actualKwh - done;
-      }
-    }
+    // Today's yield per hour; the running hour lags up to 5 minutes
+    const ac = isToday ? { ...this._actualHourly } : {};
     const hours = [...new Set([...Object.keys(fc), ...Object.keys(ac)])]
       .filter(h => (fc[h] || 0) > 0.001 || (ac[h] || 0) > 0.001)
       .map(Number);
@@ -648,7 +645,7 @@ class SolarFusionCard extends HTMLElement {
     const lossToday = this._shadingLoss(attrs.unshaded_hourly_wh, attrs.hourly_forecast_wh);
     const lossTomorrow = this._shadingLoss(tomorrowAttrs.unshaded_hourly_wh, tomorrowAttrs.hourly_forecast_wh);
     const pct = actualKwh != null && todayKwh > 0 ? Math.round(actualKwh / todayKwh * 100) : null;
-    const series = this._hourlySeries(attrs, tomorrowAttrs, actualKwh);
+    const series = this._hourlySeries(attrs, tomorrowAttrs);
 
     this.shadowRoot.innerHTML = `
       <style>${STYLES}</style>
