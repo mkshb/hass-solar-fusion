@@ -131,5 +131,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "legacy_card_resource": {
+      "title": "Old Solar Fusion card resource",
+      "description": "The Solar Fusion card now ships with the integration and is loaded automatically. The dashboard resource {url} from the former HACS card (hass-solar-fusion-card) is no longer needed.\n\n1. In HACS, uninstall **Solar Fusion Card**.\n2. Under **Settings → Dashboards → ⋮ → Resources**, remove {url} if it is still listed.\n3. Reload the browser.\n\nYour cards (`type: custom:solar-fusion-card`) keep working unchanged."
+    }
   }
 }

@@ -2,6 +2,10 @@
 import json
 
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, UrlManager
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
+
+from custom_components.solar_fusion import card
 
 from common import ROOT_DIR, set_sources, setup_entry
 
@@ -46,3 +50,47 @@ async def test_card_without_frontend(berlin):
     set_sources(hass)
     await setup_entry(hass)
     assert DATA_EXTRA_MODULE_URL not in hass.data
+
+
+LEGACY = "/hacsfiles/hass-solar-fusion-card/solar-fusion-card.js?hacstag=123"
+
+
+async def _lovelace_with_resources(hass, hass_storage, urls):
+    hass_storage["lovelace_resources"] = {
+        "version": 1, "minor_version": 1, "key": "lovelace_resources",
+        "data": {"items": [
+            {"id": str(i), "type": "module", "url": url} for i, url in enumerate(urls)
+        ]},
+    }
+    assert await async_setup_component(hass, "lovelace", {})
+
+
+async def test_legacy_hacs_resource_raises_repair_issue(berlin, hass_storage, caplog):
+    hass = berlin
+    await _lovelace_with_resources(hass, hass_storage, ["/local/other-card.js", LEGACY])
+    set_sources(hass)
+    await setup_entry(hass)
+    issue = ir.async_get(hass).async_get_issue("solar_fusion", "legacy_card_resource")
+    assert issue is not None
+    assert issue.translation_placeholders == {"url": LEGACY}
+    assert "now ships with the integration" in caplog.text
+
+
+async def test_repair_issue_disappears_with_the_resource(berlin, hass_storage):
+    hass = berlin
+    await _lovelace_with_resources(hass, hass_storage, [LEGACY])
+    set_sources(hass)
+    await setup_entry(hass)
+    resources = hass.data["lovelace"].resources
+    await resources.async_delete_item("0")
+    await card.async_check_legacy_resource(hass)
+    assert ir.async_get(hass).async_get_issue("solar_fusion", "legacy_card_resource") is None
+
+
+async def test_no_repair_issue_without_legacy_resource(berlin, hass_storage):
+    hass = berlin
+    # Eigene URL der Integration und fremde Karten zählen nicht
+    await _lovelace_with_resources(hass, hass_storage, [CARD_URL, "/local/other-card.js"])
+    set_sources(hass)
+    await setup_entry(hass)
+    assert ir.async_get(hass).async_get_issue("solar_fusion", "legacy_card_resource") is None
