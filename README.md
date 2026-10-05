@@ -143,7 +143,7 @@ hourly_forecast_wh:
 active_sources: [Forecast.Solar, Solcast PV Forecast]
 missing_sources: [Open-Meteo Solar Forecast]
 last_updated: "2026-03-11T14:00:00"
-sources:                          # compact per-source summary (used by the companion card)
+sources:                          # compact per-source summary (used by the Solar Fusion card)
   forecast_solar:
     name: "Forecast.Solar"
     today_kwh: 18.4
@@ -398,10 +398,23 @@ template:
 
 ---
 
-## Companion card
+## Solar Fusion card
 
-A dedicated Lovelace card for Solar Fusion is maintained in a separate repository:
-**[mkshb/hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card)**
+Since v0.4.0 the Lovelace card ships with the integration. Nothing to install: on start, Solar Fusion serves the card under `/solar_fusion/` and loads it in the frontend, with the same version as the integration (shown in the browser console). Add it to a dashboard:
+
+```yaml
+type: custom:solar-fusion-card
+entity: sensor.solar_fusion_dach_forecast_today
+title: Solar Fusion Roof   # optional
+```
+
+The card reads everything from the `Forecast – Today` sensor and finds `Forecast – Tomorrow` and `Diagnostics – PV Daily Production` by the same entity ID prefix. It shows today's yield, today's and tomorrow's forecast with uncertainty, the sources with their weights, the quality table and the forecast deviation of the last 14 days, in English or German.
+
+**Switching from the HACS card** ([hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card), up to v0.1.14): existing cards keep working without changes. While the old card is still registered as a dashboard resource, Solar Fusion raises a repair issue. Then:
+
+1. In HACS, uninstall **Solar Fusion Card**.
+2. Under **Settings → Dashboards → ⋮ → Resources**, remove the `…/solar-fusion-card.js` resource if it is still listed.
+3. Reload the browser.
 
 ---
 
@@ -529,7 +542,7 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 ## Requirements
 
 - Home Assistant 2024.6 or newer
-- The `recorder` integration (enabled by default in HA)
+- The `recorder` and `http` integrations (enabled by default in HA)
 - At least one supported solar forecast integration installed and providing data
 
 ---
@@ -539,14 +552,14 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 Two test suites, both run in CI (`.github/workflows/tests.yaml`):
 
 - **`tests/`** – unit tests without Home Assistant (calculation, shading, fusion with a stub for `homeassistant.util.dt`, storage migration). Run each file as a script (`python3 tests/test_calc.py`) or all with `pytest`.
-- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
+- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder, including that the card is served and that the sensors deliver every attribute the card reads, via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
 
   ```bash
   pip install -r requirements_test.txt
   pytest tests_ha
   ```
 
-Run the two suites separately: the unit tests replace `homeassistant` modules with stubs.
+Run the two suites separately: the unit tests replace `homeassistant` modules with stubs. CI also combines the coverage of both suites (minimum 90 %, see `.coveragerc`) and checks the card's JavaScript syntax with `node --check`.
 
 ---
 
