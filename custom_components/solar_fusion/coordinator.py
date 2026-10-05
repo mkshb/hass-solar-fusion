@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, timedelta
 from functools import partial
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
@@ -229,6 +229,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         # cross-validation). Average only the values that are defined.
         _uncs = [u for u in (unc_today, unc_tomorrow) if u is not None]
         uncertainty_pct = round(sum(_uncs) / len(_uncs), 1) if _uncs else None
+        unshaded_today, unshaded_tomorrow = self._unshaded_hourly(readings, today, tomorrow)
 
         # ── 5. Persist ─────────────────────────────────────────────────────
         await self._async_save()
@@ -238,6 +239,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             "fused_tomorrow": fused_tomorrow,
             "fused_today_kwh": round(sum(fused_today.values()) / 1000, 3),
             "fused_tomorrow_kwh": round(sum(fused_tomorrow.values()) / 1000, 3),
+            # Nur verschattete Stunden: Prognose, wenn die Verschattung aus wäre
+            "unshaded_today": unshaded_today,
+            "unshaded_tomorrow": unshaded_tomorrow,
             "uncertainty_pct": uncertainty_pct,
             "weights": weights,
             # Je Quelle: weight, excluded, exclusion_reason, rmse_calibrated, days_evaluated
@@ -259,6 +263,34 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 if d in (today.isoformat(), tomorrow.isoformat())
             },
         }
+
+    def _unshaded_hourly(
+        self, readings: List[SourceReading], today: date, tomorrow: date
+    ) -> Tuple[Dict[str, float], Dict[str, float]]:
+        """Fusion ohne Verschattung für die Stunden, in denen sie greift (Karte).
+
+        Eine eigene Engine ohne Anwenden, mit Kopie des Gating-Zustands, damit
+        die Hysterese der eigentlichen Fusion unberührt bleibt. Leer, solange
+        die Verschattung nicht aktiv ist.
+        """
+        if not (self._fusion and self._fusion.shading_active):
+            return {}, {}
+        plain = FusionEngine(
+            self._history,
+            exclusion_factor=float(
+                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+            ),
+            min_eval_days=int(
+                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+            ),
+            calibration_state=dict(self._calibration_state),
+        )
+        out = []
+        for day in (today, tomorrow):
+            hourly, _, _ = plain.fuse(readings, day)
+            shaded = self._fusion.slot_factors(hourly)
+            out.append({slot: hourly[slot] for slot in sorted(shaded)})
+        return out[0], out[1]
 
     async def _async_save(self) -> None:
         await self._store.async_save({

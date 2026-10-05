@@ -140,6 +140,8 @@ hourly_forecast_wh:
   "2026-03-12T06:00": 28.0
   "2026-03-12T07:00": 165.6
   ...
+unshaded_hourly_wh:               # only hours lowered by shading: forecast without it
+  "2026-03-12T17:00": 1420.0      # (empty while shading is not active)
 active_sources: [Forecast.Solar, Solcast PV Forecast]
 missing_sources: [Open-Meteo Solar Forecast]
 last_updated: "2026-03-11T14:00:00"

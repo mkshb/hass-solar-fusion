@@ -342,6 +342,10 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
                 for sid, vals in raw.items()
             },
             "hourly_forecast_wh": {k: round(v, 0) for k, v in sorted(hourly.items())},
+            # Stunden, in denen die Verschattung greift: Prognose ohne Verschattung
+            "unshaded_hourly_wh": {
+                k: round(v, 0) for k, v in sorted(data.get(f"unshaded_{self._day}", {}).items())
+            },
             "active_sources": [SOURCE_NAMES.get(s, s) for s in data.get("active_sources", [])],
             "missing_sources": [SOURCE_NAMES.get(s, s) for s in data.get("missing_sources", [])],
             "last_updated": data.get("last_updated"),
