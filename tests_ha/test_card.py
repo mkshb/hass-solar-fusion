@@ -1,14 +1,16 @@
-"""Solar Fusion Card: Auslieferung mit der Integration."""
+"""Solar Fusion Card: Auslieferung mit der Integration und Vertrag mit den Sensoren."""
 import json
+import re
 
 from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, UrlManager
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 
-from common import ROOT_DIR, set_sources, setup_entry
+from common import ROOT_DIR, STORE_KEY, set_sources, setup_entry, state
 
 MANIFEST = json.loads((ROOT_DIR / "custom_components/solar_fusion/manifest.json").read_text())
 CARD_URL = f"/solar_fusion/solar-fusion-card.js?v={MANIFEST['version']}"
+CARD_JS = (ROOT_DIR / "custom_components/solar_fusion/frontend/solar-fusion-card.js").read_text()
 
 
 def _fake_frontend(hass) -> UrlManager:
@@ -92,3 +94,44 @@ async def test_no_repair_issue_without_legacy_resource(berlin, hass_storage):
     set_sources(hass)
     await setup_entry(hass)
     assert ir.async_get(hass).async_get_issue("solar_fusion", "legacy_card_resource") is None
+
+
+def _card_reads(pattern: str) -> set[str]:
+    return set(re.findall(pattern, CARD_JS))
+
+
+async def test_sensor_attributes_cover_what_the_card_reads(berlin, hass_storage):
+    """Vertrag Karte ↔ Sensor: alles, was die Karte liest, wird geliefert."""
+    hass = berlin
+    hass_storage[STORE_KEY] = {"version": 2, "minor_version": 1, "key": STORE_KEY, "data": {
+        "history": [{"date": "2026-10-03", "source": "solcast",
+                     "forecast_kwh": 28.0, "actual_kwh": 25.0}],
+        "calibration_state": {}, "morning_snapshots": {},
+    }}
+    set_sources(hass)
+    await setup_entry(hass)
+    today = state(hass, "forecast_today")
+    attrs = today.attributes
+
+    top = _card_reads(r"\battrs\.(\w+)")
+    assert {"sources", "history", "fused_tomorrow_kwh"} <= top  # Regex greift
+    assert top <= set(attrs)
+
+    per_source = _card_reads(r"\bs\.(\w+)")
+    assert {"name", "today_kwh", "quality_label"} <= per_source
+    assert attrs["sources"]
+    for sid, source in attrs["sources"].items():
+        assert per_source <= set(source), (sid, per_source - set(source))
+
+    per_record = _card_reads(r"\br\.(\w+)")
+    assert per_record == {"date", "forecast_kwh", "actual_kwh"}
+    assert attrs["history"]
+    for record in attrs["history"]:
+        assert per_record <= set(record)
+
+    # Weitere Entitäten leitet die Karte aus der Entity-ID von forecast_today ab
+    prefix = today.entity_id.removesuffix("_forecast_today")
+    suffixes = _card_reads(r"\$\{this\._prefix\}(_\w+)")
+    assert suffixes == {"_forecast_tomorrow", "_diagnostics_pv_daily_production"}
+    for suffix in suffixes:
+        assert hass.states.get(prefix + suffix) is not None, prefix + suffix
