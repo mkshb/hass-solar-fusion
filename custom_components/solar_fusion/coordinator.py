@@ -555,11 +555,18 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             )
             end = start + timedelta(days=1)
 
+            # The recorder returns the state valid at the query start
+            # (include_start_time_state) with last_updated = query start, plus
+            # changes strictly *after* it. A reset at exactly 00:00:00.000 would
+            # be neither, so the query starts 1 ms early: the reset is then a
+            # change inside the window, and the start state is the carryover of
+            # the previous day (last_updated < start).
+            query_start = start - timedelta(milliseconds=1)
             instance = get_instance(self.hass)
             states = await instance.async_add_executor_job(
                 get_significant_states,
                 self.hass,
-                start,
+                query_start,
                 end,
                 [entity_id],
             )
@@ -568,34 +575,35 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             if not entity_states:
                 return None
 
-            # HA recorder includes the last known state *before* the query window
-            # (include_start_time_state=True by default).  For daily-reset sensors
-            # that carryover filters into the next day, so strip any state whose
-            # last_updated timestamp predates our window start.
-            entity_states = [s for s in entity_states if s.last_updated >= start]
-            if not entity_states:
-                return None
+            def _values(seq) -> List[float]:
+                out = []
+                for s in seq:
+                    try:
+                        out.append(float(s.state))
+                    except (ValueError, TypeError):
+                        pass
+                return out
 
+            carryover = _values(s for s in entity_states if s.last_updated < start)
+            in_day = _values(s for s in entity_states if s.last_updated >= start)
             unit = entity_states[-1].attributes.get("unit_of_measurement", "kWh")
             state_class = entity_states[-1].attributes.get("state_class", "")
-            values = []
-            for s in entity_states:
-                try:
-                    values.append(float(s.state))
-                except (ValueError, TypeError):
-                    pass
 
-            if not values:
+            if "kWh" in unit and state_class == "total_increasing":
+                # The carryover is the base for counters without a daily reset;
+                # for daily-reset meters the reset is a negative delta and is
+                # ignored (see calc.daily_total_from_increasing).
+                values = carryover[-1:] + in_day
+                if not values:
+                    return None
+                production = calc.daily_total_from_increasing(values)
+            elif not in_day:
                 return None
-
-            if "kWh" in unit:
-                if state_class == "total_increasing":
-                    # Sum positive deltas (carryover-safe); see calc for details.
-                    production = calc.daily_total_from_increasing(values)
-                else:
-                    production = max(values)
+            elif "kWh" in unit:
+                # Without the carryover: yesterday's total would be the maximum.
+                production = max(in_day)
             else:
-                production = sum(values) / len(values) * 24 / 1000
+                production = sum(in_day) / len(in_day) * 24 / 1000
 
             return max(0.0, round(production, 3))
 
