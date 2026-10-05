@@ -6,6 +6,12 @@
 
 A Home Assistant custom integration that **reads data from your already-installed solar forecast integrations** and combines them into a single, statistically optimised forecast — with no API calls of its own, no account required, and no data ever leaving your home.
 
+<p align="center">
+  <img src="https://raw.githubusercontent.com/mkshb/hass-solar-fusion/main/docs/card.png" alt="Solar Fusion card, light theme: yield and forecasts, hourly chart, sources with quality and weight, 14-day forecast deviation" width="380">
+  <img src="https://raw.githubusercontent.com/mkshb/hass-solar-fusion/main/docs/card-dark.png" alt="Solar Fusion card, dark theme" width="380">
+</p>
+<p align="center"><sub>The included card in the light and dark theme, with synthetic test data, rendered by the test suite.</sub></p>
+
 ---
 
 ## Why open source — and why it matters for energy data
@@ -585,7 +591,14 @@ Two test suites, both run in CI (`.github/workflows/tests.yaml`):
 
   ```bash
   pip install -r requirements_test.txt
+  python -m playwright install chromium
   pytest tests_ha
+  ```
+
+- **Card screenshot** (`tests_ha/test_card_screenshot.py`) – renders the card in Chromium (Playwright) with the sensor states of the synthetic installation and compares it with [`docs/card.png`](docs/card.png) (light theme) and [`docs/card-dark.png`](docs/card-dark.png) (dark theme), the images at the top of this README. The test fails if more than 0.05 % of the pixels differ; the actual image and the differences (in red) are then written to `tests_ha/card/output/` and uploaded by CI. After an intended change of the card, update the reference images and commit them:
+
+  ```bash
+  UPDATE_CARD_SCREENSHOT=1 pytest tests_ha/test_card_screenshot.py
   ```
 
 Run the two suites separately: the unit tests replace `homeassistant` modules with stubs. CI also combines the coverage of both suites (minimum 90 %, see `.coveragerc`) and checks the card's JavaScript syntax with `node --check`.

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Testseite für den Screenshot der Solar Fusion Card: Farben des
+     Standard-Themes von Home Assistant, ein schlichtes ha-card und ein
+     hass-Objekt mit Zuständen aus der Integration (siehe test_card_screenshot.py). -->
+<style>
+  @font-face { font-family: "Roboto"; font-weight: 400; src: url("/fonts/Roboto-Regular.woff2") format("woff2"); }
+  @font-face { font-family: "Roboto"; font-weight: 500; src: url("/fonts/Roboto-Medium.woff2") format("woff2"); }
+  :root {
+    --primary-text-color: #212121;
+    --secondary-text-color: #727272;
+    --divider-color: rgba(0, 0, 0, 0.12);
+    --card-background-color: #ffffff;
+    --primary-background-color: #fafafa;
+    --info-color: #039be5;
+    --warning-color: #ffa600;
+    --success-color: #43a047;
+    --error-color: #db4437;
+    --energy-solar-color: #ff9800;
+  }
+  /* Dunkles Standard-Theme (<html class="dark">) */
+  :root.dark {
+    --primary-text-color: #e1e1e1;
+    --secondary-text-color: #9b9b9b;
+    --divider-color: rgba(225, 225, 225, 0.12);
+    --card-background-color: #1c1c1c;
+    --primary-background-color: #111111;
+  }
+  html, body { margin: 0; background: var(--primary-background-color); }
+  body {
+    font-family: "Roboto", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 16px;
+    width: 460px;
+  }
+</style>
+<script>
+  customElements.define("ha-card", class extends HTMLElement {
+    constructor() {
+      super();
+      this.attachShadow({ mode: "open" }).innerHTML = `<style>
+        :host {
+          display: block; position: relative; box-sizing: border-box;
+          background: var(--ha-card-background, var(--card-background-color, white));
+          border-radius: 12px; border: 1px solid var(--divider-color);
+          color: var(--primary-text-color);
+        }</style><slot></slot>`;
+    }
+  });
+  // ha-icon mit den Pfaden der Icons, die die Karte nutzt (@mdi/svg 7.4.47, Apache-2.0)
+  const MDI = {
+    "mdi:solar-power-variant": "M3.33 16H11V13H4L3.33 16M13 16H20.67L20 13H13V16M21.11 18H13V22H22L21.11 18M2 22H11V18H2.89L2 22M11 8H13V11H11V8M15.76 7.21L17.18 5.79L19.3 7.91L17.89 9.33L15.76 7.21M4.71 7.91L6.83 5.79L8.24 7.21L6.12 9.33L4.71 7.91M3 2H6V4H3V2M18 2H21V4H18V2M12 7C14.76 7 17 4.76 17 2H7C7 4.76 9.24 7 12 7Z",
+    "mdi:dots-vertical": "M12,16A2,2 0 0,1 14,18A2,2 0 0,1 12,20A2,2 0 0,1 10,18A2,2 0 0,1 12,16M12,10A2,2 0 0,1 14,12A2,2 0 0,1 12,14A2,2 0 0,1 10,12A2,2 0 0,1 12,10M12,4A2,2 0 0,1 14,6A2,2 0 0,1 12,8A2,2 0 0,1 10,6A2,2 0 0,1 12,4Z",
+  };
+  customElements.define("ha-icon", class extends HTMLElement {
+    connectedCallback() {
+      const path = MDI[this.getAttribute("icon")] || "";
+      this.attachShadow({ mode: "open" }).innerHTML = `<style>
+        :host { display: inline-flex; width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px); }
+        svg { width: 100%; height: 100%; fill: currentColor; }</style>
+        <svg viewBox="0 0 24 24"><path d="${path}"></path></svg>`;
+    }
+  });
+</script>
+</head>
+<body>
+<solar-fusion-card style="display: block"></solar-fusion-card>
+</body>
+</html>

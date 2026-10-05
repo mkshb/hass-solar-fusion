@@ -74,18 +74,22 @@ def wh_period(day: str, hourly: dict) -> dict:
     return {at(day, int(hh)).isoformat(): wh for hh, wh in hourly.items()}
 
 
-def set_sources(hass, day: str = "2026-10-04", shape_day: str = "2026-10-02") -> None:
-    """Open-Meteo und Solcast für ``day`` und den Folgetag (Form eines klaren Tages)."""
-    fc, _ = synthetic_day(shape_day)
-    total = sum(fc.values()) / 1000
+def set_sources(hass, day: str = "2026-10-04", shape_day: str = "2026-10-02",
+                tomorrow_shape_day: str | None = None) -> None:
+    """Open-Meteo und Solcast für ``day`` und den Folgetag (Form eines klaren Tages).
+
+    Der Folgetag hat die Form von ``tomorrow_shape_day``, sonst die von ``shape_day``.
+    """
     tom = (date.fromisoformat(day) + timedelta(days=1)).isoformat()
-    for eid, d in ((OM, day), (OM_TOM, tom)):
-        hass.states.async_set(eid, round(total, 3),
+    for d, shape, (om, sc) in ((day, shape_day, (OM, SC)),
+                               (tom, tomorrow_shape_day or shape_day, (OM_TOM, SC_TOM))):
+        fc, _ = synthetic_day(shape)
+        total = sum(fc.values()) / 1000
+        hass.states.async_set(om, round(total, 3),
                               {"wh_period": wh_period(d, fc), "unit_of_measurement": "kWh"})
-    for eid, d in ((SC, day), (SC_TOM, tom)):
         detailed = [{"period_start": at(d, int(hh)).isoformat(), "pv_estimate": wh / 1000 * 1.05}
                     for hh, wh in fc.items()]
-        hass.states.async_set(eid, round(total * 1.05, 3),
+        hass.states.async_set(sc, round(total * 1.05, 3),
                               {"detailedHourly": detailed, "unit_of_measurement": "kWh"})
 
 
