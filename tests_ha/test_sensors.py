@@ -1,7 +1,7 @@
 """Sensor-Attribute und Warnungen beim Anlegen."""
 from homeassistant.helpers import entity_registry as er
 
-from common import DOMAIN, ENTRY_ID, make_entry, set_sources, setup_entry, state
+from common import DOMAIN, ENTRY_ID, STORE_KEY, make_entry, set_sources, setup_entry, state
 
 
 async def test_forecast_sensors_have_no_invalid_state_class(berlin, caplog):
@@ -64,3 +64,22 @@ async def test_doubled_prefix_is_renamed(berlin):
         "sensor.solar_fusion_test_diagnostics_shading"
     assert reg.async_get_entity_id("sensor", DOMAIN, f"{ENTRY_ID}_uncertainty") == \
         "sensor.solar_fusion_test_solar_fusion_test_forecast_uncertainty"
+
+
+async def test_history_attribute_covers_14_days_for_all_sources(berlin, hass_storage):
+    # Früher die letzten 30 Datensätze: bei drei Quellen nur 10 Tage
+    hass = berlin
+    days = [f"2026-09-{d:02d}" for d in range(14, 31)] + [f"2026-10-{d:02d}" for d in range(1, 4)]
+    history = [
+        {"date": d, "source": sid, "forecast_kwh": 20.0, "actual_kwh": 19.0}
+        for d in days for sid in ("open_meteo_solar_forecast", "solcast", "forecast_solar")
+    ]
+    hass_storage[STORE_KEY] = {"version": 2, "minor_version": 1, "key": STORE_KEY, "data": {
+        "history": history, "calibration_state": {}, "morning_snapshots": {},
+    }}
+    set_sources(hass)
+    await setup_entry(hass)
+    records = state(hass, "forecast_today").attributes["history"]
+    dates = sorted({r["date"] for r in records})
+    assert dates[0] == "2026-09-20" and dates[-1] == "2026-10-03"
+    assert len(dates) == 14 and len(records) == 42

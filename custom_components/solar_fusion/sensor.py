@@ -4,7 +4,7 @@ from __future__ import annotations
 import json as _json
 import logging
 import pathlib as _pathlib
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from homeassistant.util import dt as dt_util
@@ -37,6 +37,7 @@ from .const import (
     CONF_PV_ENTITIES,
     CONF_PV_ENTITY,
     DOMAIN,
+    HISTORY_WINDOW_DAYS,
     SOURCE_NAMES,
     device_name,
 )
@@ -344,7 +345,7 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
             "active_sources": [SOURCE_NAMES.get(s, s) for s in data.get("active_sources", [])],
             "missing_sources": [SOURCE_NAMES.get(s, s) for s in data.get("missing_sources", [])],
             "last_updated": data.get("last_updated"),
-            "history": self.coordinator.history[-30:],
+            "history": _recent_history(self.coordinator.history),
         }
 
 
@@ -606,6 +607,16 @@ class ShadingSensor(CoordinatorEntity, SensorEntity):
 # ──────────────────────────────────────────────────────────────────────────────
 # Weight helpers
 # ──────────────────────────────────────────────────────────────────────────────
+
+def _recent_history(history: List[Dict]) -> List[Dict]:
+    """History records of the last HISTORY_WINDOW_DAYS days (all sources), oldest first.
+
+    A fixed number of records would cover fewer days the more sources an
+    instance has (30 records = 10 days with three sources).
+    """
+    cutoff = (dt_util.now().date() - timedelta(days=HISTORY_WINDOW_DAYS)).isoformat()
+    return sorted((r for r in history if r.get("date", "") >= cutoff), key=lambda r: r["date"])
+
 
 def _weight_attrs(info: Dict) -> Dict[str, Any]:
     """Gewichtungs-Attribute einer Quelle; leere Info (Quelle nicht aktiv) → Standardwerte."""

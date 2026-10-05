@@ -161,7 +161,7 @@ sources:                          # compact per-source summary (used by the Sola
     quality_label: "Fair"
   solcast:
     ...
-history:                          # last 30 raw history records
+history:                          # raw history records of the last 14 days (all sources)
   - date: "2026-03-11"
     source: "forecast_solar"
     forecast_kwh: 18.4
