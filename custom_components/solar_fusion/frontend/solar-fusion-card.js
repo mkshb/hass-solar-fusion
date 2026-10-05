@@ -1,11 +1,10 @@
 /**
- * Solar Fusion Card v2
+ * Solar Fusion Card
  * Lovelace Custom Card for the Solar Fusion integration.
  *
- * Installation:
- *   1. Copy solar-fusion-card.js and the locales/ folder to /config/www/
- *   2. Settings → Dashboards → Resources:
- *      URL: /local/solar-fusion-card.js   Type: JavaScript module
+ * Shipped with the integration since 0.4.0: it serves this file and locales/
+ * under /solar_fusion/ and loads the card as a frontend module
+ * (?v=<integration version>). No dashboard resource is needed.
  *
  * Card YAML – only one entity required:
  *   type: custom:solar-fusion-card
@@ -13,19 +12,15 @@
  *   title: Solar Fusion Roof   # optional
  */
 
+// Integration version, passed by the integration as ?v=<version>
+const CARD_VERSION = new URL(import.meta.url).searchParams.get("v") || "dev";
+
 // Keys match the integration's language-neutral quality_label (calc.quality_label)
 const QUALITY = {
   "accurate": { color: "#4ade80" },
   "skewed":   { color: "#38bdf8" },
   "noisy":    { color: "#facc15" },
   "poor":     { color: "#f87171" },
-};
-// Labels from integration versions before 0.2.2
-const QUALITY_ALIAS = {
-  "excellent": "accurate", "top": "accurate", "good": "accurate", "genau": "accurate",
-  "verzerrt (korrigiert)": "skewed",
-  "fair": "noisy", "okay": "noisy", "unruhig": "noisy",
-  "bad": "poor", "schlecht": "poor",
 };
 
 // Converts a #rrggbb hex color to rgba(r,g,b,alpha)
@@ -240,11 +235,13 @@ class SolarFusionCard extends HTMLElement {
 
   // Load locale JSON from locales/<lang>.json next to the card file.
   // Falls back to English if the requested language is unavailable.
+  // The version query busts the browser cache after an update.
   async _loadLocale(lang) {
     const base = new URL(".", import.meta.url).href;
+    const query = new URL(import.meta.url).search;
     for (const l of [lang.split("-")[0], "en"]) {
       try {
-        const res = await fetch(`${base}locales/${l}.json`);
+        const res = await fetch(`${base}locales/${l}.json${query}`);
         if (res.ok) return await res.json();
       } catch (_) { /* try next */ }
     }
@@ -477,8 +474,7 @@ class SolarFusionCard extends HTMLElement {
             <span>${this._t("col_source")}</span><span class="q-col-label">${this._t("col_label")}</span><span>${this._t("col_rmse")}</span><span class="q-col-mae">${this._t("col_mae")}</span><span class="q-col-bias">${this._t("col_bias")}</span><span class="q-col-days">${this._t("col_days")}</span>
           </div>
           ${sourceList.map(([, s]) => {
-            const raw    = (s.quality_label || "").toLowerCase();
-            const key    = QUALITY_ALIAS[raw] || raw;
+            const key    = (s.quality_label || "").toLowerCase();
             const color  = QUALITY[key]?.color || "#94a3b8";
             const qlabel = QUALITY[key] ? this._t(`quality_${key}`) : s.quality_label;
             const bias   = s.bias_kwh != null
@@ -530,10 +526,25 @@ class SolarFusionCard extends HTMLElement {
   }
 }
 
-customElements.define("solar-fusion-card", SolarFusionCard);
-window.customCards = window.customCards || [];
-window.customCards.push({
-  type: "solar-fusion-card",
-  name: "Solar Fusion Card",
-  description: "Fused PV forecast with source comparison, quality metrics, and history.",
-});
+// The integration loads the card before any dashboard resource. A card from
+// the former HACS plugin, still registered as a resource, then fails to
+// define the element; if it was loaded first, this one steps aside.
+if (!customElements.get("solar-fusion-card")) {
+  customElements.define("solar-fusion-card", SolarFusionCard);
+  window.customCards = window.customCards || [];
+  window.customCards.push({
+    type: "solar-fusion-card",
+    name: "Solar Fusion Card",
+    description: "Fused PV forecast with source comparison, quality metrics, and history.",
+  });
+  console.info(
+    `%c SOLAR-FUSION-CARD %c ${CARD_VERSION} `,
+    "color:#0f1117;background:#f59e0b;font-weight:700",
+    "color:#f59e0b;background:#0f1117",
+  );
+} else {
+  console.warn(
+    "Solar Fusion Card: another solar-fusion-card is already defined. " +
+    "Remove the dashboard resource of the former HACS card (hass-solar-fusion-card).",
+  );
+}
