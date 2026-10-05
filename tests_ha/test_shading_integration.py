@@ -86,6 +86,13 @@ async def test_learns_from_snapshots_and_applies(ready, hass_storage):
     hourly = shaded.attributes["hourly_forecast_wh"]
     assert sum(hourly.values()) / 1000 == pytest.approx(float(shaded.state), abs=0.05)
 
+    # Für die Karte: Prognose ohne Verschattung, nur in den betroffenen Stunden
+    unshaded = shaded.attributes["unshaded_hourly_wh"]
+    assert slot in unshaded and "2026-10-04T12:00" not in unshaded
+    assert unshaded[slot] == pytest.approx(plain.attributes["hourly_forecast_wh"][slot], rel=0.02)
+    assert all(unshaded[s] >= hourly[s] for s in unshaded)
+    assert state(hass, "forecast_tomorrow").attributes["unshaded_hourly_wh"] == {}  # Anwenden aus
+
 
 async def test_snapshot_stores_hourly_and_corrected(ready):
     hass = ready

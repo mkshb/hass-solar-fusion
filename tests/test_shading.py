@@ -107,9 +107,12 @@ def test_factor_ignores_cells_below_min_samples():
 
 
 def test_factor_neutral_band():
-    # 0,93 ist Rauschen der Normierung, keine Verschattung
-    assert calc.shading_factor(_cell(0.93), 247.5, 13.0) == 1.0
-    assert abs(calc.shading_factor(_cell(0.85), 247.5, 13.0) - 0.85) < 1e-12
+    # ±0,05 um 1,0 ist Rauschen der Normierung
+    assert calc.shading_factor(_cell(0.97), 247.5, 13.0) == 1.0
+    assert calc.shading_factor(_cell(1.04), 247.5, 13.0) == 1.0
+    assert abs(calc.shading_factor(_cell(0.93), 247.5, 13.0) - 0.93) < 1e-12
+    # Über 1,0: Prognose unterschätzt diesen Sonnenstand regelmäßig
+    assert abs(calc.shading_factor(_cell(1.2), 247.5, 13.0) - 1.2) < 1e-12
 
 
 def test_slot_factor_ignores_unknown_positions():
@@ -120,8 +123,8 @@ def test_slot_factor_ignores_unknown_positions():
     assert abs(calc.shading_slot_factor(cells, positions) - 0.2) < 1e-12
     # Keine Position bekannt → 1,0
     assert calc.shading_slot_factor(cells, [(300.0, 2.0), (120.0, 30.0)]) == 1.0
-    # Bekannt und neutral (≥ 0,9) zählt als 1,0 mit
-    neutral = {**cells, **_cell(0.95, key="295:2")}
+    # Bekannt und neutral (±0,05) zählt als 1,0 mit
+    neutral = {**cells, **_cell(0.97, key="295:2")}
     assert abs(calc.shading_slot_factor(neutral, positions) - (0.2 * 3 + 1.0) / 4) < 1e-12
 
 
@@ -225,8 +228,8 @@ def test_learned_map_shows_horizon():
     # Hohe Sonne und Vormittag: keine Verschattung
     open_sky = [c for c in learned.values() if c["el"] >= 18 or c["az"] < 200]
     assert open_sky
-    assert all(c["factor"] >= calc.SHADING_NEUTRAL_ABOVE for c in open_sky), [
-        c for c in open_sky if c["factor"] < calc.SHADING_NEUTRAL_ABOVE
+    assert all(c["factor"] >= 0.9 for c in open_sky), [
+        c for c in open_sky if c["factor"] < 0.9
     ]
 
     # Angewendet: 17-Uhr-Slot am 04.10. (Mitte 242°/11°) deutlich gedämpft
@@ -247,7 +250,7 @@ def test_cloudy_days_do_not_enter_the_map():
 
 def test_factor_bounds():
     # Ist praktisch 0 in einer Stunde → Faktor nicht unter 0,05;
-    # Ist deutlich über Prognose → nicht über 1,0
+    # Ist deutlich über Prognose (1,8) → nicht über SHADING_FACTOR_MAX
     days = []
     for _ in range(4):
         hours = [{"az": 180.0 + i, "el": 30.0, "actual": 2000.0, "forecast": {"x": 2000.0}}

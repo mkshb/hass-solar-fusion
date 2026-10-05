@@ -13,6 +13,7 @@ from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import slugify
 
+from .card import async_setup_card
 from .const import CONF_INSTANCE_NAME, DOMAIN, device_name
 from .coordinator import SolarForecastCoordinator
 
@@ -30,6 +31,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     as a forecast provider.
     """
     hass.data.setdefault(DOMAIN, {})
+    await async_setup_card(hass)
 
     async def handle_take_snapshot(call: ServiceCall) -> None:
         """Manually trigger a morning snapshot for all Solar Fusion instances."""

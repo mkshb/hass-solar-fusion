@@ -140,10 +140,12 @@ hourly_forecast_wh:
   "2026-03-12T06:00": 28.0
   "2026-03-12T07:00": 165.6
   ...
+unshaded_hourly_wh:               # only hours changed by the shading map: forecast without it
+  "2026-03-12T17:00": 1420.0      # (empty while shading is not active)
 active_sources: [Forecast.Solar, Solcast PV Forecast]
 missing_sources: [Open-Meteo Solar Forecast]
 last_updated: "2026-03-11T14:00:00"
-sources:                          # compact per-source summary (used by the companion card)
+sources:                          # compact per-source summary (used by the Solar Fusion card)
   forecast_solar:
     name: "Forecast.Solar"
     today_kwh: 18.4
@@ -161,7 +163,7 @@ sources:                          # compact per-source summary (used by the comp
     quality_label: "Fair"
   solcast:
     ...
-history:                          # last 30 raw history records
+history:                          # raw history records of the last 14 days (all sources)
   - date: "2026-03-11"
     source: "forecast_solar"
     forecast_kwh: 18.4
@@ -295,9 +297,11 @@ learn: true
 apply: true
 horizon_sources: []
 active: true                 # apply on and at least one learned cell
-shaded_cells:                # learned cells with factor < 0.9
+shaded_cells:                # learned cells with factor below 0.95
   - {azimuth: 247.5, elevation: 13.0, factor: 0.43, samples: 3}
   - {azimuth: 262.5, elevation: 5.0, factor: 0.11, samples: 4}
+raised_cells:                # learned cells with factor above 1.05 (forecast too low there)
+  - {azimuth: 287.5, elevation: 9.0, factor: 1.18, samples: 5}
 learning_days_used: 4        # days that passed the cloud filter
 learning_days_stored: 7
 last_learning_run: "2026-10-04T00:05:00+02:00"
@@ -315,11 +319,12 @@ A built-in daily production meter sensor that replaces the need for an external 
 
 > **Only created when PV production sensor(s) are configured** in Step 3 of the setup. Without a configured PV sensor, this entity does not exist and Solar Fusion uses equal weights permanently.
 
-Supports both sensor types:
+Supports three sensor types:
 - **`total_increasing`** (lifetime kWh counter): tracks the delta since midnight
 - **Daily-resetting sensors**: passes through the current value directly
+- **Power sensors** (W or kW): integrates the power over time since midnight (left rectangle rule, like the *Integral* helper); while the source is unavailable nothing is counted. After a restart without a stored integral from today, the day so far is taken from the recorder's hourly and 5-minute means.
 
-When multiple PV sensors are configured, their values are **summed** into a single daily total. This sensor is also used internally by Solar Fusion as the preferred source for nightly accuracy recording — taking priority over reading the raw PV sensors directly from the HA recorder.
+When multiple PV sensors are configured, their values are **summed** into a single daily total. For a hybrid inverter with battery, use a sensor of the PV production itself (e.g. a template of AC power plus battery charging), not the inverter's AC energy: that includes the battery discharge at night.
 
 Key attributes:
 
@@ -329,8 +334,8 @@ source_count: 2
 source_entities:
   - sensor.pv_dach
   - sensor.pv_garage
-day_start_sensor_pv_dach: 12453.2
-day_start_sensor_pv_garage: 3821.7
+day_start_sensor_pv_dach: 12453.2       # energy counters: value at midnight
+day_energy_sensor_pv_garage: 8.4312     # power sensors: integral since midnight (kWh)
 ```
 
 ---
@@ -398,10 +403,30 @@ template:
 
 ---
 
-## Companion card
+## Solar Fusion card
 
-A dedicated Lovelace card for Solar Fusion is maintained in a separate repository:
-**[mkshb/hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card)**
+Since v0.4.0 the Lovelace card ships with the integration. Nothing to install: on start, Solar Fusion serves the card under `/solar_fusion/` and loads it in the frontend, with the same version as the integration (shown in the browser console). Add it to a dashboard:
+
+```yaml
+type: custom:solar-fusion-card
+entity: sensor.solar_fusion_dach_forecast_today
+title: Solar Fusion Roof   # optional
+```
+
+The card reads everything from the `Forecast – Today` sensor and finds `Forecast – Tomorrow` and `Diagnostics – PV Daily Production` by the same entity ID prefix. It shows:
+
+- today's yield (with the share of the forecast), today's forecast with its uncertainty and tomorrow's forecast,
+- an hourly chart for today or tomorrow: forecast per hour and, for today, the hourly yield from the recorder's long-term statistics of the PV daily meter; while shading is applied, a dashed cap on each lowered hour shows the forecast without shading, and the forecast tiles show how many kWh shading takes off,
+- the sources with quality label, daily forecast and weight (RMSE, MAE, bias and exclusion reason as tooltip),
+- the forecast deviation of the last 14 days with its average; tap or hover a bar for the day's value.
+
+Colours and font follow the Home Assistant theme (light, dark or custom); the card loads nothing from outside your instance. Texts are in English or German.
+
+**Switching from the HACS card** ([hass-solar-fusion-card](https://github.com/mkshb/hass-solar-fusion-card), up to v0.1.14): existing cards keep working without changes. While the old card is still registered as a dashboard resource, Solar Fusion raises a repair issue. Then:
+
+1. In HACS, uninstall **Solar Fusion Card**.
+2. Under **Settings → Dashboards → ⋮ → Resources**, remove the `…/solar-fusion-card.js` resource if it is still listed.
+3. Reload the browser.
 
 ---
 
@@ -474,8 +499,11 @@ Every update interval:
      single source)
 
   Nightly (after midnight, on first update of the new day):
-  7. Read yesterday's actual production from HA recorder
-     (Diagnostics – PV Daily Production meter preferred; falls back to summing PV sensors)
+  7. Read yesterday's actual production from HA recorder: the long-term
+     statistics of the configured PV sensors if they cover the whole day
+     (time-weighted for power sensors; the same source as the hourly
+     actuals for shading), else the Diagnostics – PV Daily Production
+     meter, else the PV sensors' states
   8. Compare actual against the 06:00 morning snapshot for each source
   9. Store (forecast_kwh, actual_kwh) pair in history for each source
  10. Invalidate isotonic cache for affected seasonal windows
@@ -493,9 +521,19 @@ Forecast models know the sky, not your neighbour's roof. If a building or a tree
 
 1. Hourly production of each finished day comes from the recorder's **long-term statistics** (`hour`, `change`) of the PV Daily Production meter, or the configured PV sensors summed. Long-term statistics are kept indefinitely, unlike the 10-day state history.
 2. The reference forecast is the **hourly** 06:00 morning snapshot of each source (stored since v0.3.0; older snapshots without hourly values are skipped).
-3. For every hour: ratio = actual / forecast. Clouds are removed by dividing by the day's ratio in the safely unshaded hours (sun elevation > 25°). Only days whose ratio is **stable** across those reference hours (coefficient of variation ≤ 0.15, at least 3 hours) are used – on a changeable day the hourly ratio is cloud noise, not shading. At 53° N, days with three hours above 25° exist from about March to mid-October; cells learned in autumn carry over.
-4. Each hour is placed by the sun position at the slot's midpoint. A cell's factor is the median of all samples in the cell **and its eight neighbours**, clamped to [0.05, 1.0]; it counts as learned with at least 3 samples. The neighbourhood matters: the midpoint of a given slot moves 0.5–0.7° in elevation per day, so a single cell is hit on only a few clear days. In a rolling simulation (learn from all previous days, forecast the next day, 40 % clear days) the hourly error dropped by 49 % with the neighbourhood versus 10 % with single cells.
-5. Factors of 0.9 or more count as 1.0 (normalisation noise, not shading). Factors above 1.0 (reflection) are not used, since they cannot be told apart from noise.
+3. For every hour: ratio = actual / forecast. Clouds are removed by dividing by the day's ratio in the safely unshaded hours (sun elevation > 25°). Only days whose ratio is **stable** across those reference hours (coefficient of variation ≤ 0.20, at least 3 hours) are used – on a changeable day the hourly ratio is cloud noise, not shading. At 53° N, days with three hours above 25° exist from about March to mid-October; cells learned in autumn carry over.
+4. Each hour is placed by the sun position at the slot's midpoint. A cell's factor is the median of all samples in the cell **and its eight neighbours**, clamped to [0.05, 1.3]; it counts as learned with at least 3 samples. The neighbourhood matters: the midpoint of a given slot moves 0.5–0.7° in elevation per day, so a single cell is hit on only a few clear days. In a rolling simulation (learn from all previous days, forecast the next day, 40 % clear days) the hourly error dropped by 49 % with the neighbourhood versus 10 % with single cells.
+5. Factors within ±0.05 of 1.0 count as 1.0 (normalisation noise). Factors above 1.0 are allowed up to 1.3: besides obstacles, the map learns where the forecast's daily shape is regularly off for this system – e.g. summer evenings that yield 10–30 % more than forecast.
+
+These settings were chosen in a replay on 218 days of real data (39 test days, each forecast only from days at least 4 days apart; error summed over the test days):
+
+| Map settings | Error | from 15:00 | learn spring → test summer | learn summer → test spring |
+|---|---|---|---|---|
+| no correction | 224.9 kWh | 84.5 | 94.1 | 128.2 |
+| CV ≤ 0.15, factors ≤ 1.0, ≥ 0.9 neutral (before 0.4.0) | 166.8 kWh | 80.3 | 68.1 | 95.2 |
+| CV ≤ 0.20, factors ≤ 1.3, ±0.05 neutral | 150.2 kWh | 63.3 | 63.7 | 82.5 |
+
+Without the cloud filter, and with a smoothed fit at 5-minute sun positions or a horizon profile, results were not better; a sharp shadow edge within one hour is still underestimated, since only hourly values are learned.
 
 **Applying** (option *Apply learned shading*): each hour of each source is multiplied by the mean factor at its four quarter-hour sun positions (bilinear between learned cells; unknown areas stay at 1.0) **before** weighting, and the source's daily total is reduced by the same share, so `Forecast – Today/Tomorrow` equals the sum of the corrected hours. Quarter-hour positions whose surroundings have not been learned yet are left out of the mean instead of counting as 1.0. Quarter-hours beat the slot midpoint at realistic weather (20–33 % lower hourly error with 30–50 % clear days); only during the first weeks with nearly all-clear days is the midpoint marginally better.
 
@@ -529,7 +567,7 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 ## Requirements
 
 - Home Assistant 2024.6 or newer
-- The `recorder` integration (enabled by default in HA)
+- The `recorder` and `http` integrations (enabled by default in HA)
 - At least one supported solar forecast integration installed and providing data
 
 ---
@@ -539,14 +577,14 @@ Storage version 2 (v0.3.0) stores morning snapshots as `{daily, daily_corrected,
 Two test suites, both run in CI (`.github/workflows/tests.yaml`):
 
 - **`tests/`** – unit tests without Home Assistant (calculation, shading, fusion with a stub for `homeassistant.util.dt`, storage migration). Run each file as a script (`python3 tests/test_calc.py`) or all with `pytest`.
-- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
+- **`tests_ha/`** – integration tests with a real Home Assistant core and recorder, including that the card is served and that the sensors deliver every attribute the card reads, via [pytest-homeassistant-custom-component](https://github.com/MatthewFlamm/pytest-homeassistant-custom-component) and synthetic data. Python 3.14:
 
   ```bash
   pip install -r requirements_test.txt
   pytest tests_ha
   ```
 
-Run the two suites separately: the unit tests replace `homeassistant` modules with stubs.
+Run the two suites separately: the unit tests replace `homeassistant` modules with stubs. CI also combines the coverage of both suites (minimum 90 %, see `.coveragerc`) and checks the card's JavaScript syntax with `node --check`.
 
 ---
 

@@ -131,5 +131,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "legacy_card_resource": {
+      "title": "Alte Ressource der Solar Fusion Card",
+      "description": "Die Solar Fusion Card wird jetzt mit der Integration ausgeliefert und automatisch geladen. Die Dashboard-Ressource {url} der früheren HACS-Karte (hass-solar-fusion-card) wird nicht mehr gebraucht.\n\n1. In HACS **Solar Fusion Card** deinstallieren.\n2. Unter **Einstellungen → Dashboards → ⋮ → Ressourcen** {url} entfernen, falls noch vorhanden.\n3. Den Browser neu laden.\n\nVorhandene Karten (`type: custom:solar-fusion-card`) funktionieren unverändert weiter."
+    }
   }
 }

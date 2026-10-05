@@ -18,6 +18,8 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"
+      - name: Check card syntax
+        run: node --check custom_components/solar_fusion/frontend/solar-fusion-card.js
       - name: Run dependency-free unit tests
         run: |
           for t in tests/test_*.py; do

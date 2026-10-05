@@ -1,14 +1,14 @@
 {
   "domain": "solar_fusion",
   "name": "Solar Fusion",
-  "after_dependencies": ["forecast_solar", "open_meteo_solar_forecast", "solcast_solar"],
+  "after_dependencies": ["forecast_solar", "frontend", "lovelace", "open_meteo_solar_forecast", "solcast_solar"],
   "codeowners": ["@mkshb"],
   "config_flow": true,
-  "dependencies": ["recorder"],
+  "dependencies": ["http", "recorder"],
   "documentation": "https://github.com/mkshb/hass-solar-fusion",
   "integration_type": "service",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/mkshb/hass-solar-fusion/issues",
   "requirements": [],
-  "version": "0.3.2"
+  "version": "0.4.0"
 }
