@@ -837,12 +837,14 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._shading["last_run"] = dt_util.now().isoformat()
         if self._fusion:
             self._fusion.set_shading_cells(cells)
+        learned = [c for c in cells.values() if c.get("learned") and not calc.is_neutral(c["factor"])]
         _LOGGER.info(
-            "Shading map learned from %d of %d days: %d cells learned, %d below 0.9",
+            "Shading map learned from %d of %d days: %d cells learned, %d lowered, %d raised",
             used,
             len(days),
-            sum(1 for c in cells.values() if c.get("learned")),
-            sum(1 for c in cells.values() if c.get("learned") and c["factor"] < 0.9),
+            sum(1 for c in learned),
+            sum(1 for c in learned if c["factor"] < 1.0),
+            sum(1 for c in learned if c["factor"] > 1.0),
         )
 
     async def async_learn_shading(self, days: int = 10) -> Dict[str, Any]:

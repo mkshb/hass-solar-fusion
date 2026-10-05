@@ -102,6 +102,21 @@ def test_uncertainty_uses_shaded_daily_totals():
     assert abs(shaded_pct - plain_pct) <= 0.2
 
 
+def test_factor_above_one_raises_hour_and_total():
+    # Formfehler der Prognose: an diesem Sonnenstand kommt regelmäßig mehr an
+    raised = {
+        **_cells_around(datetime(2026, 10, 4, 17, tzinfo=ha_stub.TZ), 1.25),
+        **_cells_around(datetime(2026, 10, 5, 17, tzinfo=ha_stub.TZ), 1.25),
+    }
+    readings = [_reading("open_meteo_solar_forecast", 38.0), _reading("solcast", 41.0)]
+    plain, _, _ = _engine(shading_apply=False).fuse(readings, TODAY)
+    engine = _engine(shading_cells=raised)
+    up, _, _ = engine.fuse(readings, TODAY)
+    assert abs(up[SLOT17] / plain[SLOT17] - 1.25) < 0.01
+    assert sum(up.values()) > sum(plain.values())
+    assert all(r > 1.0 for r in engine.last_shading_ratios[TODAY.isoformat()].values())
+
+
 def test_tomorrow_corrected_too():
     readings = [_reading("solcast", 41.0, tomorrow_kwh=35.0)]
     plain, _, _ = _engine(shading_apply=False).fuse(readings, TOMORROW)

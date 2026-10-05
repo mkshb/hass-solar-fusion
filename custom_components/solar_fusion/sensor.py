@@ -687,24 +687,30 @@ class ShadingSensor(CoordinatorEntity, SensorEntity):
     def extra_state_attributes(self) -> Dict[str, Any]:
         shading = self.coordinator.shading
         cells = shading.get("cells", {})
-        shaded = sorted(
-            (
-                {
-                    "azimuth": c["az"],
-                    "elevation": c["el"],
-                    "factor": c["factor"],
-                    "samples": c["n"],
-                }
-                for c in cells.values()
-                if c.get("learned") and c["factor"] < calc.SHADING_NEUTRAL_ABOVE
-            ),
-            key=lambda c: (c["azimuth"], c["elevation"]),
-        )
+        def _cells(select):
+            return sorted(
+                (
+                    {
+                        "azimuth": c["az"],
+                        "elevation": c["el"],
+                        "factor": c["factor"],
+                        "samples": c["n"],
+                    }
+                    for c in cells.values()
+                    if c.get("learned") and not calc.is_neutral(c["factor"]) and select(c["factor"])
+                ),
+                key=lambda c: (c["azimuth"], c["elevation"]),
+            )
+
+        shaded = _cells(lambda f: f < 1.0)
+        raised = _cells(lambda f: f > 1.0)
         data = self.coordinator.data or {}
         ratios = data.get("shading_ratios", {})
         return {
             **self.coordinator.shading_settings,
             "shaded_cells": shaded,
+            # Faktor über 1: Prognose unterschätzt diese Sonnenstände regelmäßig
+            "raised_cells": raised,
             "learning_days_used": shading.get("used_days", 0),
             "learning_days_stored": len(shading.get("days", {})),
             "last_learning_run": shading.get("last_run"),

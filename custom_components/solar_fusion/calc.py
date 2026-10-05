@@ -309,8 +309,19 @@ def _mean(block: List[float]) -> float:
 #
 # Anwenden (shading_factor): bilinear zwischen den Mittelpunkten gelernter
 # Zellen; ungelernte Zellen zählen nicht mit, ohne gelernte Nachbarn gilt 1,0.
-# Faktoren ab SHADING_NEUTRAL_ABOVE gelten als 1,0 (Rauschen, keine
-# Verschattung).
+# Faktoren innerhalb ±SHADING_NEUTRAL_BAND um 1,0 gelten als 1,0 (Rauschen).
+#
+# Faktoren über 1,0 sind erlaubt (bis SHADING_FACTOR_MAX): Die Karte lernt
+# neben Hindernissen auch Formfehler der Prognose je Sonnenstand, etwa
+# Sommerabende, an denen regelmäßig 10–30 % mehr ankommt als vorhergesagt.
+# Replay auf 218 Tagen echter Anlagendaten (39 Testtage, Leave-one-out mit
+# ±3 Tagen Sperre; Fehler in kWh, Summe über die Testtage):
+#                               gesamt  ab 15 Uhr  Frühj.→Sommer  Sommer→Frühj.
+#   ohne Korrektur               224,9     84,5        94,1          128,2
+#   bis 0,15 CV, max 1,0, ≥0,9   166,8     80,3        68,1           95,2
+#   bis 0,20 CV, max 1,3, ±0,05  150,2     63,3        63,7           82,5
+# Ohne Wolkenfilter wird es schlechter; Entfaltung über 5-Minuten-Positionen
+# und ein Horizontprofil waren nicht besser (Schattenkante unscharf).
 #
 # Gelernt wird mit dem Sonnenstand zur Slotmitte, angewendet als Mittel der
 # Faktoren an den vier Viertelstunden-Mitten (SHADING_APPLY_QUARTERS); nur
@@ -331,15 +342,13 @@ SHADING_AZ_STEP = 5.0            # Zellbreite Azimut (°)
 SHADING_EL_STEP = 2.0            # Zellhöhe Sonnenhöhe (°)
 SHADING_REF_ELEVATION = 25.0     # Stunden darüber gelten als sicher unverschattet
 SHADING_MIN_REF_HOURS = 3        # Mindestzahl Referenzstunden je Tag
-SHADING_MAX_REF_CV = 0.15        # max. Streuung (std / mean) des Verhältnisses in den Referenzstunden
+SHADING_MAX_REF_CV = 0.20        # max. Streuung (std / mean) des Verhältnisses in den Referenzstunden
 SHADING_MIN_FORECAST_WH = 150.0  # Stunden mit weniger Prognose sind zu verrauscht
 SHADING_MIN_SAMPLES = 3          # Mindestzahl Stichproben (Tage) je Zelle inkl. Nachbarn
 SHADING_POOL_RADIUS = 1          # Nachbarschaft beim Lernen: 1 → 3 × 3 Zellen
 SHADING_FACTOR_MIN = 0.05
-# Keine Faktoren über 1,0: Ein Mehrertrag durch Reflexion ließe sich vom
-# Rauschen der Normierung nicht trennen.
-SHADING_FACTOR_MAX = 1.0
-SHADING_NEUTRAL_ABOVE = 0.9      # Faktoren ab hier gelten als 1,0
+SHADING_FACTOR_MAX = 1.3         # über 1,0: Formfehler der Prognose (siehe oben)
+SHADING_NEUTRAL_BAND = 0.05      # |Faktor − 1| darunter gilt als 1,0
 SHADING_APPLY_QUARTERS = True    # Anwenden: Mittel über vier Viertelstunden statt Slotmitte
 # Plausibilität des PV-Sensors: Stunden, in denen die Sonne an allen vier
 # Viertelstunden unter dieser Höhe steht, dürfen zusammen höchstens so viel
@@ -540,9 +549,14 @@ def learn_shading_map(
     return cells, used
 
 
+def is_neutral(factor: float) -> bool:
+    """Faktor so nah an 1,0, dass er als Rauschen gilt."""
+    return abs(factor - 1.0) < SHADING_NEUTRAL_BAND
+
+
 def _effective_factor(cell: Dict) -> float:
     f = cell["factor"]
-    return 1.0 if f >= SHADING_NEUTRAL_ABOVE else f
+    return 1.0 if is_neutral(f) else f
 
 
 def shading_factor(cells: ShadingCells, az: float, el: float) -> float:

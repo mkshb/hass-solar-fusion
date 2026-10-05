@@ -140,7 +140,7 @@ hourly_forecast_wh:
   "2026-03-12T06:00": 28.0
   "2026-03-12T07:00": 165.6
   ...
-unshaded_hourly_wh:               # only hours lowered by shading: forecast without it
+unshaded_hourly_wh:               # only hours changed by the shading map: forecast without it
   "2026-03-12T17:00": 1420.0      # (empty while shading is not active)
 active_sources: [Forecast.Solar, Solcast PV Forecast]
 missing_sources: [Open-Meteo Solar Forecast]
@@ -297,9 +297,11 @@ learn: true
 apply: true
 horizon_sources: []
 active: true                 # apply on and at least one learned cell
-shaded_cells:                # learned cells with factor < 0.9
+shaded_cells:                # learned cells with factor below 0.95
   - {azimuth: 247.5, elevation: 13.0, factor: 0.43, samples: 3}
   - {azimuth: 262.5, elevation: 5.0, factor: 0.11, samples: 4}
+raised_cells:                # learned cells with factor above 1.05 (forecast too low there)
+  - {azimuth: 287.5, elevation: 9.0, factor: 1.18, samples: 5}
 learning_days_used: 4        # days that passed the cloud filter
 learning_days_stored: 7
 last_learning_run: "2026-10-04T00:05:00+02:00"
@@ -519,9 +521,19 @@ Forecast models know the sky, not your neighbour's roof. If a building or a tree
 
 1. Hourly production of each finished day comes from the recorder's **long-term statistics** (`hour`, `change`) of the PV Daily Production meter, or the configured PV sensors summed. Long-term statistics are kept indefinitely, unlike the 10-day state history.
 2. The reference forecast is the **hourly** 06:00 morning snapshot of each source (stored since v0.3.0; older snapshots without hourly values are skipped).
-3. For every hour: ratio = actual / forecast. Clouds are removed by dividing by the day's ratio in the safely unshaded hours (sun elevation > 25°). Only days whose ratio is **stable** across those reference hours (coefficient of variation ≤ 0.15, at least 3 hours) are used – on a changeable day the hourly ratio is cloud noise, not shading. At 53° N, days with three hours above 25° exist from about March to mid-October; cells learned in autumn carry over.
-4. Each hour is placed by the sun position at the slot's midpoint. A cell's factor is the median of all samples in the cell **and its eight neighbours**, clamped to [0.05, 1.0]; it counts as learned with at least 3 samples. The neighbourhood matters: the midpoint of a given slot moves 0.5–0.7° in elevation per day, so a single cell is hit on only a few clear days. In a rolling simulation (learn from all previous days, forecast the next day, 40 % clear days) the hourly error dropped by 49 % with the neighbourhood versus 10 % with single cells.
-5. Factors of 0.9 or more count as 1.0 (normalisation noise, not shading). Factors above 1.0 (reflection) are not used, since they cannot be told apart from noise.
+3. For every hour: ratio = actual / forecast. Clouds are removed by dividing by the day's ratio in the safely unshaded hours (sun elevation > 25°). Only days whose ratio is **stable** across those reference hours (coefficient of variation ≤ 0.20, at least 3 hours) are used – on a changeable day the hourly ratio is cloud noise, not shading. At 53° N, days with three hours above 25° exist from about March to mid-October; cells learned in autumn carry over.
+4. Each hour is placed by the sun position at the slot's midpoint. A cell's factor is the median of all samples in the cell **and its eight neighbours**, clamped to [0.05, 1.3]; it counts as learned with at least 3 samples. The neighbourhood matters: the midpoint of a given slot moves 0.5–0.7° in elevation per day, so a single cell is hit on only a few clear days. In a rolling simulation (learn from all previous days, forecast the next day, 40 % clear days) the hourly error dropped by 49 % with the neighbourhood versus 10 % with single cells.
+5. Factors within ±0.05 of 1.0 count as 1.0 (normalisation noise). Factors above 1.0 are allowed up to 1.3: besides obstacles, the map learns where the forecast's daily shape is regularly off for this system – e.g. summer evenings that yield 10–30 % more than forecast.
+
+These settings were chosen in a replay on 218 days of real data (39 test days, each forecast only from days at least 4 days apart; error summed over the test days):
+
+| Map settings | Error | from 15:00 | learn spring → test summer | learn summer → test spring |
+|---|---|---|---|---|
+| no correction | 224.9 kWh | 84.5 | 94.1 | 128.2 |
+| CV ≤ 0.15, factors ≤ 1.0, ≥ 0.9 neutral (before 0.4.0) | 166.8 kWh | 80.3 | 68.1 | 95.2 |
+| CV ≤ 0.20, factors ≤ 1.3, ±0.05 neutral | 150.2 kWh | 63.3 | 63.7 | 82.5 |
+
+Without the cloud filter, and with a smoothed fit at 5-minute sun positions or a horizon profile, results were not better; a sharp shadow edge within one hour is still underestimated, since only hourly values are learned.
 
 **Applying** (option *Apply learned shading*): each hour of each source is multiplied by the mean factor at its four quarter-hour sun positions (bilinear between learned cells; unknown areas stay at 1.0) **before** weighting, and the source's daily total is reduced by the same share, so `Forecast – Today/Tomorrow` equals the sum of the corrected hours. Quarter-hour positions whose surroundings have not been learned yet are left out of the mean instead of counting as 1.0. Quarter-hours beat the slot midpoint at realistic weather (20–33 % lower hourly error with 30–50 % clear days); only during the first weeks with nearly all-clear days is the midpoint marginally better.
 

@@ -59,7 +59,8 @@ def _case(seed):
         az, el = rng.uniform(60, 300), rng.uniform(0, 40)
         key = calc.shading_cell(az, el)
         a, e = (int(x) for x in key.split(":"))
-        cells[key] = {"az": a + 2.5, "el": e + 1.0, "factor": round(rng.uniform(0.05, 1.0), 3),
+        cells[key] = {"az": a + 2.5, "el": e + 1.0,
+                      "factor": round(rng.uniform(calc.SHADING_FACTOR_MIN, calc.SHADING_FACTOR_MAX), 3),
                       "n": 5, "n_pooled": 5, "learned": rng.random() < 0.9}
     horizon = [s for s in sids if rng.random() < 0.3]
     return readings, history, cells, horizon
@@ -98,15 +99,16 @@ def test_shading_ratios_are_bounded_and_horizon_untouched():
             engine.fuse(readings, day)
             ratios = engine.last_shading_ratios[day.isoformat()]
             for sid, r in ratios.items():
-                assert calc.SHADING_FACTOR_MIN - 1e-12 <= r <= 1.0 + 1e-12, (seed, sid, r)
+                assert calc.SHADING_FACTOR_MIN - 1e-12 <= r <= calc.SHADING_FACTOR_MAX + 1e-12, (seed, sid, r)
                 if sid in horizon:
                     assert r == 1.0, (seed, sid)
 
 
 def test_shading_never_raises_the_daily_total():
     # Vergleich mit leerer Karte bei sonst gleicher Konfiguration (gleicher
-    # Kalibrierungsmodus): Verschattung senkt oder hält die Tagessumme.
+    # Kalibrierungsmodus): Zellen mit Faktor ≤ 1 senken oder halten die Tagessumme.
     for seed, readings, history, cells, horizon in _cases():
+        cells = {k: {**c, "factor": min(1.0, c["factor"])} for k, c in cells.items()}
         shaded = _engine(history, cells, horizon)
         empty = _engine(history, {}, horizon)
         for day in (TODAY, TOMORROW):
