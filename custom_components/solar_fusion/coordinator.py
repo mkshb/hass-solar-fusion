@@ -82,6 +82,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # {date_iso: {"daily": {source_id: kWh}, "daily_corrected": {source_id: kWh},
         #             "hourly": {source_id: {"HH": Wh}}}}  – persisted in storage
+        # "HH" ist die lokale Stunde ohne UTC-Offset. Beim Ende der Sommerzeit
+        # fallen beide 02-Uhr-Stunden in einen Slot (summiert), beim Beginn fehlt
+        # 02. Beides liegt nachts ohne Ertrag; Lernen und Fusion überspringen
+        # Stunden mit Sonne unter dem Horizont ohnehin.
         self._morning_snapshots: Dict[str, Dict[str, Dict]] = {}
         # Verschattung – persisted:
         #   days:  {date_iso: {"actual": {"HH": Wh}, "forecast": {source_id: {"HH": Wh}},

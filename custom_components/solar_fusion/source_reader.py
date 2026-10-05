@@ -399,8 +399,10 @@ def _extract_wh_hours(raw: dict, period_end: bool = False) -> HourlyWh:
 
     ``period_end``: der Schlüssel bezeichnet das Ende der Periode (Forecast.Solar).
     Der Wert gehört dann zu der Stunde, die kurz vor dem Schlüssel liegt
-    (08:00 → Slot 07:00, Sonnenaufgang 07:13 → Slot 07:00). Mehrere Perioden
-    in derselben Stunde werden summiert.
+    (08:00 → Slot 07:00, Sonnenaufgang 07:13 → Slot 07:00).
+
+    Mehrere Perioden in derselben lokalen Stunde werden summiert – auch die
+    doppelte Stunde beim Ende der Sommerzeit (02:00+02:00 und 02:00+01:00).
     """
     result: HourlyWh = {}
     for k, v in raw.items():
@@ -408,11 +410,8 @@ def _extract_wh_hours(raw: dict, period_end: bool = False) -> HourlyWh:
             wh = float(v)
         except (ValueError, TypeError):
             continue
-        if period_end:
-            ts = _normalise_ts(_shift_back(k))
-            result[ts] = result.get(ts, 0.0) + wh
-        else:
-            result[_normalise_ts(str(k))] = wh
+        ts = _normalise_ts(_shift_back(k) if period_end else str(k))
+        result[ts] = result.get(ts, 0.0) + wh
     return result
 
 
