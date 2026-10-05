@@ -50,6 +50,9 @@ const DEFAULT_LOCALE = {
   "hour_tip":         "{hour}:00 · forecast {fc} kWh",
   "hour_tip_actual":  "{hour}:00 · forecast {fc} kWh · yield {ac} kWh",
   "no_hourly":        "No hourly forecast available",
+  "shading":          "Shading",
+  "shading_tip":      "without shading {us} kWh",
+  "shading_loss":     "shading −{v}\u00a0kWh",
   "sources_today":    "Sources today",
   "quality_accurate": "Accurate",
   "quality_skewed":   "Skewed",
@@ -154,6 +157,12 @@ const STYLES = `
   }
   .bar .fc, .bar .ac { display: block; position: absolute; bottom: 0; }
   .bar .fc { left: 0; right: 0; border-radius: 3px 3px 0 0; background: var(--sf-forecast); }
+  .bar .us {
+    display: block; position: absolute; left: 0; right: 0; box-sizing: border-box;
+    border: 1px dashed var(--sf-solar); border-bottom: 0; border-radius: 3px 3px 0 0;
+    background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--sf-solar) 22%, transparent) 0 2px, transparent 2px 5px);
+  }
+  .swatch.us { border: 1px dashed var(--sf-solar); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--sf-solar) 30%, transparent) 0 2px, transparent 2px 4px); box-sizing: border-box; }
   .bar .ac { left: 20%; right: 20%; border-radius: 2px 2px 0 0; background: var(--sf-solar); }
   .bar.selected .fc { outline: 1px solid var(--sf-solar); }
   .labels { display: flex; gap: 4px; padding-left: 48px; margin-top: 4px; }
@@ -332,6 +341,12 @@ class SolarFusionCard extends HTMLElement {
     for (const [slot, wh] of Object.entries(source)) {
       fc[slot.slice(11, 13)] = (Number(wh) || 0) / 1000;
     }
+    // Hours lowered by shading: forecast without shading
+    const unshaded = (isToday ? attrs.unshaded_hourly_wh : tomorrowAttrs?.unshaded_hourly_wh) || {};
+    const us = {};
+    for (const [slot, wh] of Object.entries(unshaded)) {
+      us[slot.slice(11, 13)] = (Number(wh) || 0) / 1000;
+    }
     const ac = {};
     if (isToday) {
       Object.assign(ac, this._actualHourly);
@@ -349,9 +364,21 @@ class SolarFusionCard extends HTMLElement {
     const series = [];
     for (let h = Math.min(...hours); h <= Math.max(...hours); h++) {
       const key = String(h).padStart(2, "0");
-      series.push({ hour: key, fc: fc[key] || 0, ac: isToday && key in ac ? ac[key] : null });
+      const lowered = (us[key] || 0) - (fc[key] || 0) > 0.005;
+      series.push({
+        hour: key, fc: fc[key] || 0, ac: isToday && key in ac ? ac[key] : null, us: lowered ? us[key] : null,
+      });
     }
     return series;
+  }
+
+  // kWh removed by shading over the day (0 without shading)
+  _shadingLoss(unshadedWh, forecastWh) {
+    let loss = 0;
+    for (const [slot, wh] of Object.entries(unshadedWh || {})) {
+      loss += Math.max(0, (Number(wh) || 0) - (Number(forecastWh?.[slot]) || 0));
+    }
+    return loss / 1000;
   }
 
   // [{date, deviation}] for the last HISTORY_DAYS days up to yesterday –
@@ -481,25 +508,29 @@ class SolarFusionCard extends HTMLElement {
       <div class="legend">
         <span><span class="swatch" style="background:var(--sf-forecast)"></span>${this._t("forecast")}</span>
         ${this._day === "today" ? `<span><span class="swatch" style="background:var(--sf-solar)"></span>${this._t("actual")}</span>` : ""}
+        ${series.some(p => p.us != null) ? `<span><span class="swatch us"></span>${this._t("shading")}</span>` : ""}
       </div>`;
     if (!series.length) {
       return `<div><div class="chart-head">${toggle}${legend}</div><div class="empty">${this._t("no_hourly")}</div></div>`;
     }
 
-    const top = this._axisMax(Math.max(...series.map(p => Math.max(p.fc, p.ac || 0))));
+    const top = this._axisMax(Math.max(...series.map(p => Math.max(p.fc, p.ac || 0, p.us || 0))));
     const height = 156;
     const nowHour = this._day === "today" ? String(new Date().getHours()).padStart(2, "0") : null;
     const nowIndex = series.findIndex(p => p.hour === nowHour);
-    const tip = p => p.ac != null
+    const tip = p => (p.ac != null
       ? this._t("hour_tip_actual", { hour: p.hour, fc: this._num(p.fc), ac: this._num(p.ac) })
-      : this._t("hour_tip", { hour: p.hour, fc: this._num(p.fc) });
+      : this._t("hour_tip", { hour: p.hour, fc: this._num(p.fc) }))
+      + (p.us != null ? ` · ${this._t("shading_tip", { us: this._num(p.us) })}` : "");
 
     const bars = series.map(p => {
       const fh = Math.max(1, Math.round(p.fc / top * height));
       const ah = p.ac != null ? Math.max(1, Math.round(p.ac / top * height)) : 0;
+      const uh = p.us != null ? Math.max(2, Math.round((p.us - p.fc) / top * height)) : 0;
       const label = this._escape(tip(p));
       return `<button class="bar${this._selectedHour === p.hour ? " selected" : ""}" data-hour="${p.hour}" title="${label}" aria-label="${label}">
         <span class="fc" style="height:${p.fc > 0 ? fh : 0}px"></span>
+        ${p.us != null ? `<span class="us" style="bottom:${p.fc > 0 ? fh : 0}px;height:${uh}px"></span>` : ""}
         ${p.ac != null ? `<span class="ac" style="height:${ah}px"></span>` : ""}
       </button>`;
     }).join("");
@@ -614,6 +645,8 @@ class SolarFusionCard extends HTMLElement {
       }
     } catch (_) {}
 
+    const lossToday = this._shadingLoss(attrs.unshaded_hourly_wh, attrs.hourly_forecast_wh);
+    const lossTomorrow = this._shadingLoss(tomorrowAttrs.unshaded_hourly_wh, tomorrowAttrs.hourly_forecast_wh);
     const pct = actualKwh != null && todayKwh > 0 ? Math.round(actualKwh / todayKwh * 100) : null;
     const series = this._hourlySeries(attrs, tomorrowAttrs, actualKwh);
 
@@ -644,11 +677,13 @@ class SolarFusionCard extends HTMLElement {
             <span class="small muted">${this._t("forecast_today")}</span>
             <span class="tile-value">${this._num(todayKwh)}<span class="tile-unit"> kWh</span></span>
             ${uncertainty != null ? `<span class="small muted">${this._t("uncertainty", { pct: this._num(uncertainty) })}</span>` : ""}
+            ${lossToday >= 0.05 ? `<span class="small muted">${this._t("shading_loss", { v: this._num(lossToday) })}</span>` : ""}
           </button>
           <button class="tile" data-entity="${tomorrowId}">
             <span class="small muted">${this._t("forecast_tomorrow")}</span>
             <span class="tile-value">${this._num(tomorrowKwh)}<span class="tile-unit"> kWh</span></span>
             ${nSources ? `<span class="small muted">${this._t("from_sources", { n: nSources })}</span>` : ""}
+            ${lossTomorrow >= 0.05 ? `<span class="small muted">${this._t("shading_loss", { v: this._num(lossTomorrow) })}</span>` : ""}
           </button>
         </div>
 

@@ -131,7 +131,7 @@ async def test_sensor_attributes_cover_what_the_card_reads(berlin, hass_storage)
 
     tomorrow = state(hass, "forecast_tomorrow").attributes
     per_tomorrow = _card_reads(r"\btomorrowAttrs\??\.(\w+)")
-    assert per_tomorrow == {"hourly_forecast_wh"}
+    assert per_tomorrow == {"hourly_forecast_wh", "unshaded_hourly_wh"}
     assert per_tomorrow <= set(tomorrow)
 
     # Weitere Entitäten leitet die Karte aus der Entity-ID von forecast_today ab

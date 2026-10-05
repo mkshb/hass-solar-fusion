@@ -413,7 +413,7 @@ title: Solar Fusion Roof   # optional
 The card reads everything from the `Forecast – Today` sensor and finds `Forecast – Tomorrow` and `Diagnostics – PV Daily Production` by the same entity ID prefix. It shows:
 
 - today's yield (with the share of the forecast), today's forecast with its uncertainty and tomorrow's forecast,
-- an hourly chart for today or tomorrow: forecast per hour and, for today, the hourly yield from the recorder's long-term statistics of the PV daily meter,
+- an hourly chart for today or tomorrow: forecast per hour and, for today, the hourly yield from the recorder's long-term statistics of the PV daily meter; while shading is applied, a dashed cap on each lowered hour shows the forecast without shading, and the forecast tiles show how many kWh shading takes off,
 - the sources with quality label, daily forecast and weight (RMSE, MAE, bias and exclusion reason as tooltip),
 - the forecast deviation of the last 14 days with its average; tap or hover a bar for the day's value.
 
