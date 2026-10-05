@@ -7,8 +7,9 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -40,6 +41,7 @@ from .source_reader import (
     SourceUnavailable,
     hourly_from_attributes,
     read_source,
+    resolve_entities,
     today_entity_id,
 )
 
@@ -50,6 +52,9 @@ _SNAPSHOT_HOUR = 6
 # Rückwirkendes Lernen: spätester Zeitpunkt (Stunde), bis zu dem ein Zustand
 # der Quellentität noch als Morgenprognose gilt
 _RETRO_LATEST_HOUR = 9
+# Kehrt eine Quelle zurück, schreibt ihre Integration heute und morgen meist
+# kurz nacheinander; so lange warten, um beide in einem Refresh zu lesen.
+_RECOVERY_DELAY_S = 2.0
 
 
 type SolarFusionConfigEntry = ConfigEntry[SolarForecastCoordinator]
@@ -161,6 +166,20 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 f"{DOMAIN} reconcile history",
             )
 
+        # Fehlende Quelle wieder da: gleich neu fusionieren, nicht erst im nächsten Intervall
+        self._source_by_entity = self._source_entities()
+        self._recovery = Debouncer(
+            self.hass, _LOGGER, cooldown=_RECOVERY_DELAY_S, immediate=False,
+            function=self.async_refresh,
+        )
+        self.config_entry.async_on_unload(self._recovery.async_cancel)
+        if self._source_by_entity:
+            self.config_entry.async_on_unload(
+                async_track_state_change_event(
+                    self.hass, list(self._source_by_entity), self._async_source_changed
+                )
+            )
+
         # Register 06:00 snapshot trigger
         self.config_entry.async_on_unload(
             async_track_time_change(
@@ -183,6 +202,29 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             self._snapshot_pending = True
         else:
             self._snapshot_pending = False
+
+    def _source_entities(self) -> Dict[str, str]:
+        """{entity_id: source_id} der Entitäten, die die Quellen lesen."""
+        entity_map: Dict[str, Dict] = self._config.get("entity_map", {})
+        out: Dict[str, str] = {}
+        for source_id in self._config.get(CONF_SOURCES, []):
+            resolved = resolve_entities(self.hass, source_id, entity_map.get(source_id, {}))
+            for entity_id in resolved or ():
+                out[entity_id] = source_id
+        return out
+
+    @callback
+    def _async_source_changed(self, event: Event) -> None:
+        """Zustandsänderung einer Quellentität; nur für ausgefallene Quellen relevant."""
+        source_id = self._source_by_entity.get(event.data["entity_id"])
+        new_state = event.data.get("new_state")
+        if (
+            source_id not in self._unavailable_sources
+            or new_state is None
+            or new_state.state in ("unknown", "unavailable")
+        ):
+            return
+        self._recovery.async_schedule_call()
 
     @callback
     def _async_take_morning_snapshot(self, now: datetime) -> None:

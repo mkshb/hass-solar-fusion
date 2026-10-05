@@ -126,7 +126,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: SolarFusionConfigEntry) 
     _async_fix_doubled_entity_ids(hass, entry)
     coordinator = SolarForecastCoordinator(hass, entry)
     await coordinator.async_setup()
-    await coordinator.async_config_entry_first_refresh()
+    # Kein async_config_entry_first_refresh: Ohne verfügbare Quelle würde der
+    # Eintrag gar nicht laden (auch der PV-Tageszähler nicht). Die Prognose-
+    # Entitäten sind dann unavailable, bis eine Quelle Werte liefert.
+    await coordinator.async_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
