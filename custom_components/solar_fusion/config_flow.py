@@ -65,9 +65,11 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """
 
     VERSION = 1
-    _data: Dict[str, Any] = {}
-    _detected: List[str] = []
-    _selected: List[str] = []
+
+    def __init__(self) -> None:
+        self._data: Dict[str, Any] = {}
+        self._detected: List[str] = []
+        self._selected: List[str] = []
 
     async def async_step_user(
         self, user_input: Optional[Dict[str, Any]] = None

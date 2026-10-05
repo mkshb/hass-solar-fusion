@@ -121,3 +121,27 @@ async def test_options_flow_limits_horizon_sources_to_selected(berlin):
     assert entry.data["sources"] == ["solcast"]
     assert entry.data["horizon_sources"] == []
     assert entry.title == "Solar Fusion"
+
+
+async def _complete_user_flow(hass, sources, name, entity_map, pv):
+    _, result = await _user_step(hass, sources, name)
+    result = await hass.config_entries.flow.async_configure(result["flow_id"], entity_map)
+    result = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {"pv_entities": pv, "update_interval": 30})
+    await hass.async_block_till_done()
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    return result["result"]
+
+
+async def test_second_user_flow_leaves_first_entry_alone(berlin):
+    hass = berlin
+    _register_sources(hass)
+    first = await _complete_user_flow(
+        hass, ["solcast"], "Dach", {"solcast_today": SC, "solcast_tomorrow": SC_TOM}, [PV])
+    await _complete_user_flow(
+        hass, ["open_meteo_solar_forecast"], "Garage",
+        {"open_meteo_solar_forecast_today": OM, "open_meteo_solar_forecast_tomorrow": OM_TOM}, [])
+
+    assert first.data["instance_name"] == "Dach"
+    assert first.data["sources"] == ["solcast"]
+    assert first.data["pv_entities"] == [PV]
