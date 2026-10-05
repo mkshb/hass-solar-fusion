@@ -224,7 +224,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             or new_state.state in ("unknown", "unavailable")
         ):
             return
-        self._recovery.async_schedule_call()
+        self.hass.async_create_task(self._recovery.async_call())
 
     @callback
     def _async_take_morning_snapshot(self, now: datetime) -> None:
