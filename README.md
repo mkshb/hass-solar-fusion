@@ -317,11 +317,12 @@ A built-in daily production meter sensor that replaces the need for an external 
 
 > **Only created when PV production sensor(s) are configured** in Step 3 of the setup. Without a configured PV sensor, this entity does not exist and Solar Fusion uses equal weights permanently.
 
-Supports both sensor types:
+Supports three sensor types:
 - **`total_increasing`** (lifetime kWh counter): tracks the delta since midnight
 - **Daily-resetting sensors**: passes through the current value directly
+- **Power sensors** (W or kW): integrates the power over time since midnight (left rectangle rule, like the *Integral* helper); while the source is unavailable nothing is counted. After a restart without a stored integral from today, the day so far is taken from the recorder's hourly and 5-minute means.
 
-When multiple PV sensors are configured, their values are **summed** into a single daily total. This sensor is also used internally by Solar Fusion as the preferred source for nightly accuracy recording — taking priority over reading the raw PV sensors directly from the HA recorder.
+When multiple PV sensors are configured, their values are **summed** into a single daily total. For a hybrid inverter with battery, use a sensor of the PV production itself (e.g. a template of AC power plus battery charging), not the inverter's AC energy: that includes the battery discharge at night.
 
 Key attributes:
 
@@ -331,8 +332,8 @@ source_count: 2
 source_entities:
   - sensor.pv_dach
   - sensor.pv_garage
-day_start_sensor_pv_dach: 12453.2
-day_start_sensor_pv_garage: 3821.7
+day_start_sensor_pv_dach: 12453.2       # energy counters: value at midnight
+day_energy_sensor_pv_garage: 8.4312     # power sensors: integral since midnight (kWh)
 ```
 
 ---
@@ -496,8 +497,11 @@ Every update interval:
      single source)
 
   Nightly (after midnight, on first update of the new day):
-  7. Read yesterday's actual production from HA recorder
-     (Diagnostics – PV Daily Production meter preferred; falls back to summing PV sensors)
+  7. Read yesterday's actual production from HA recorder: the long-term
+     statistics of the configured PV sensors if they cover the whole day
+     (time-weighted for power sensors; the same source as the hourly
+     actuals for shading), else the Diagnostics – PV Daily Production
+     meter, else the PV sensors' states
   8. Compare actual against the 06:00 morning snapshot for each source
   9. Store (forecast_kwh, actual_kwh) pair in history for each source
  10. Invalidate isotonic cache for affected seasonal windows
