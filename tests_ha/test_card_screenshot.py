@@ -3,7 +3,8 @@
 Die Karte läuft in Chromium (Playwright) auf einer Testseite mit den Farben
 des Standard-Themes; Zustände und Attribute liefert die Integration mit der
 synthetischen Anlage, die Stundenstatistik ist eine Attrappe. Verglichen wird
-mit ``docs/card.png``, das auch die README zeigt.
+mit ``docs/card.png`` (helles Theme) und ``docs/card-dark.png`` (dunkles),
+die auch die README zeigt.
 
 Nach einer gewollten Änderung der Karte das Bild neu schreiben:
 ``UPDATE_CARD_SCREENSHOT=1 pytest tests_ha/test_card_screenshot.py``
@@ -22,7 +23,7 @@ from common import (  # noqa: E402
     PV, ROOT_DIR, STORE_KEY, at, set_sources, setup_entry, state, synthetic_day,
 )
 
-BASELINE = ROOT_DIR / "docs" / "card.png"
+BASELINES = {"light": ROOT_DIR / "docs" / "card.png", "dark": ROOT_DIR / "docs" / "card-dark.png"}
 OUTPUT = ROOT_DIR / "tests_ha" / "card" / "output"
 PAGE_DIR = ROOT_DIR / "tests_ha" / "card"
 CARD_DIR = ROOT_DIR / "custom_components" / "solar_fusion" / "frontend"
@@ -106,17 +107,19 @@ async def _serve(route):
                         content_type=_CONTENT_TYPES.get(file.suffix, "application/octet-stream"))
 
 
-async def _screenshot(entity_id: str, states: dict, statistics: dict) -> bytes:
+async def _screenshot(theme: str, entity_id: str, states: dict, statistics: dict) -> bytes:
     async with async_api.async_playwright() as playwright:
         browser = await playwright.chromium.launch()
         try:
             page = await browser.new_page(
                 viewport={"width": 492, "height": 600}, device_scale_factor=2,
-                locale="en-US", timezone_id="Europe/Berlin",
+                locale="en-US", timezone_id="Europe/Berlin", color_scheme=theme,
             )
             await page.clock.set_fixed_time(NOW)
             await page.route(f"{ORIGIN}/**", _serve)
             await page.goto(f"{ORIGIN}/")
+            if theme == "dark":
+                await page.evaluate("document.documentElement.classList.add('dark')")
             await page.evaluate("""async ({entityId, states, statistics}) => {
                 await import("/solar_fusion/solar-fusion-card.js?v=test");
                 const card = document.querySelector("solar-fusion-card");
@@ -148,32 +151,35 @@ def _changed_share(actual: Image.Image, baseline: Image.Image) -> tuple[float, I
     return mask.histogram()[255] / (actual.width * actual.height), mask
 
 
-async def test_card_looks_like_the_reference(berlin, freezer, hass_storage, tmp_path):
+@pytest.mark.parametrize("theme", ["light", "dark"])
+async def test_card_looks_like_the_reference(theme, berlin, freezer, hass_storage, tmp_path):
     hass = berlin
+    baseline = BASELINES[theme]
     entity_id, states, statistics = await _card_states(hass, hass_storage, freezer)
-    png = await _screenshot(entity_id, states, statistics)
+    png = await _screenshot(theme, entity_id, states, statistics)
     shot = tmp_path / "card.png"
     shot.write_bytes(png)
     actual = Image.open(shot)
 
     if os.environ.get("UPDATE_CARD_SCREENSHOT"):
-        BASELINE.parent.mkdir(exist_ok=True)
-        BASELINE.write_bytes(png)
+        baseline.parent.mkdir(exist_ok=True)
+        baseline.write_bytes(png)
         return
-    if not BASELINE.is_file():
-        pytest.fail(f"{BASELINE} fehlt; mit UPDATE_CARD_SCREENSHOT=1 anlegen")
+    if not baseline.is_file():
+        pytest.fail(f"{baseline} fehlt; mit UPDATE_CARD_SCREENSHOT=1 anlegen")
 
-    changed, mask = _changed_share(actual, Image.open(BASELINE))
+    reference = Image.open(baseline)
+    changed, mask = _changed_share(actual, reference)
     if changed > MAX_CHANGED:
         OUTPUT.mkdir(parents=True, exist_ok=True)
-        (OUTPUT / "card-actual.png").write_bytes(png)
+        (OUTPUT / f"{baseline.stem}-actual.png").write_bytes(png)
         if mask is not None:
             highlight = Image.composite(Image.new("RGB", actual.size, (255, 0, 0)),
                                         actual.convert("RGB"), mask)
-            highlight.save(OUTPUT / "card-diff.png")
-        size = f"{actual.size} statt {Image.open(BASELINE).size}" if mask is None else ""
+            highlight.save(OUTPUT / f"{baseline.stem}-diff.png")
+        size = f"{actual.size} statt {reference.size}" if mask is None else ""
         pytest.fail(
-            f"Karte weicht von {BASELINE.relative_to(ROOT_DIR)} ab: {changed:.2%} der Pixel "
+            f"Karte weicht von {baseline.relative_to(ROOT_DIR)} ab: {changed:.2%} der Pixel "
             f"(erlaubt {MAX_CHANGED:.2%}) {size}. Bilder in {OUTPUT.relative_to(ROOT_DIR)}; "
             "gewollte Änderung: UPDATE_CARD_SCREENSHOT=1"
         )
