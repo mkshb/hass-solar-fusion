@@ -1,2 +1,5 @@
 # Integrationstests mit Home Assistant (tests_ha/), Python 3.14
 pytest-homeassistant-custom-component==0.13.367
+# Screenshot der Karte (tests_ha/test_card_screenshot.py); feste Version = festes Chromium
+playwright==1.63.0
+pillow
