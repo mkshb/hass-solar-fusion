@@ -11,6 +11,7 @@ Nach einer gewollten Änderung der Karte das Bild neu schreiben:
 """
 import json
 import os
+import random
 from datetime import date, timedelta
 
 import pytest
@@ -43,12 +44,18 @@ _CONTENT_TYPES = {".html": "text/html", ".js": "text/javascript",
 
 
 def _history() -> list[dict]:
-    """14 Tage Prognose (wie set_sources: Solcast 5 % höher) und Ist der synthetischen Anlage."""
+    """14 Tage Prognose (wie set_sources: Solcast 5 % höher) und Ist der synthetischen Anlage.
+
+    Die synthetische Prognose kennt den Horizont nicht und liegt deshalb jeden
+    Tag rund 5 % über dem Ist. Eine feste Streuung je Tag (wie Wetterfehler),
+    im Mittel etwas darunter, bringt Abweichungen in beide Richtungen in die Grafik.
+    """
     records = []
     for offset in range(HISTORY_DAYS, 0, -1):
         day = (date.fromisoformat(TODAY) - timedelta(days=offset)).isoformat()
         fc, ac = synthetic_day(day)
-        forecast, actual = sum(fc.values()) / 1000, round(sum(ac.values()) / 1000, 3)
+        spread = random.Random(f"{day}-weather").uniform(0.85, 1.03)
+        forecast, actual = sum(fc.values()) * spread / 1000, round(sum(ac.values()) / 1000, 3)
         for source, factor in (("open_meteo_solar_forecast", 1.0), ("solcast", 1.05)):
             records.append({"date": day, "source": source,
                             "forecast_kwh": round(forecast * factor, 3), "actual_kwh": actual})
