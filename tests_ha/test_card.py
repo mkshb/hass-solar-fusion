@@ -5,8 +5,6 @@ from homeassistant.components.frontend import DATA_EXTRA_MODULE_URL, UrlManager
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.setup import async_setup_component
 
-from custom_components.solar_fusion import card
-
 from common import ROOT_DIR, set_sources, setup_entry
 
 MANIFEST = json.loads((ROOT_DIR / "custom_components/solar_fusion/manifest.json").read_text())
@@ -83,7 +81,7 @@ async def test_repair_issue_disappears_with_the_resource(berlin, hass_storage):
     await setup_entry(hass)
     resources = hass.data["lovelace"].resources
     await resources.async_delete_item("0")
-    await card.async_check_legacy_resource(hass)
+    await hass.async_block_till_done()
     assert ir.async_get(hass).async_get_issue("solar_fusion", "legacy_card_resource") is None
 
 

@@ -40,11 +40,22 @@ async def async_setup_card(hass: HomeAssistant) -> None:
     else:
         _LOGGER.debug("Frontend not loaded, card not registered")
 
-    @callback
-    def _check(_hass: HomeAssistant) -> None:
-        hass.async_create_task(async_check_legacy_resource(hass))
+    async def _async_watch_resources() -> None:
+        await async_check_legacy_resource(hass)
+        resources = _resources(hass)
+        # Nur im Speichermodus änderbar; dann nach jeder Änderung neu prüfen,
+        # damit der Hinweis ohne Neustart verschwindet.
+        if hasattr(resources, "async_add_change_set_listener"):
+            async def _changed(_changes) -> None:
+                await async_check_legacy_resource(hass)
 
-    async_at_started(hass, _check)
+            resources.async_add_change_set_listener(_changed)
+
+    @callback
+    def _started(_hass: HomeAssistant) -> None:
+        hass.async_create_task(_async_watch_resources())
+
+    async_at_started(hass, _started)
 
 
 async def async_check_legacy_resource(hass: HomeAssistant) -> None:
@@ -74,14 +85,18 @@ def _is_legacy(url: str) -> bool:
     return path.endswith(f"/{CARD_FILE}") and not path.startswith(f"{URL_BASE}/")
 
 
-async def _async_resource_urls(hass: HomeAssistant) -> list[str]:
-    """URLs der Dashboard-Ressourcen (Speicher- und YAML-Modus)."""
+def _resources(hass: HomeAssistant):
+    """Ressourcen-Collection von Lovelace (Speicher- oder YAML-Modus) oder None."""
     lovelace = hass.data.get("lovelace")
     # Ab HA 2025.2 ein Dataclass, davor ein dict
-    resources = (
-        lovelace.get("resources") if isinstance(lovelace, dict)
-        else getattr(lovelace, "resources", None)
-    )
+    if isinstance(lovelace, dict):
+        return lovelace.get("resources")
+    return getattr(lovelace, "resources", None)
+
+
+async def _async_resource_urls(hass: HomeAssistant) -> list[str]:
+    """URLs der Dashboard-Ressourcen."""
+    resources = _resources(hass)
     if resources is None:
         return []
     try:
