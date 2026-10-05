@@ -79,7 +79,7 @@
           "exclusion_factor": "A source whose RMSE exceeds k times that of the best source gets weight 0. It keeps being evaluated and returns on its own. Default: 2.0.",
           "min_eval_days": "Until a source has this many evaluated days, all sources are weighted equally. Default: 7.",
           "shading_learn": "Learns a correction factor per sun position (azimuth × elevation) from hourly production versus the 06:00 forecast. Uses only days with a stable ratio in the high-sun hours, so clouds do not count as shading. Default: off.",
-          "shading_apply": "Multiplies every source's hours by the learned factor before weighting. Has no effect until cells are learned.",
+          "shading_apply": "Multiplies every source's hours by the learned factor before weighting. Has no effect until cells are learned, so enabling learning is enough. Turn off to inspect the learned map first without changing the forecast.",
           "horizon_sources": "These sources are neither corrected nor used for learning, e.g. Open-Meteo with use_horizon enabled. Prevents double correction."
         }
       }

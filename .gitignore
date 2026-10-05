@@ -3,5 +3,6 @@ custom_components/solar_fusion/__pycache__/*
 __pycache__/
 *.pyc
 .pytest_cache/
-.coverage*
+.coverage
+.coverage.*
 RELEASE_NOTES.md

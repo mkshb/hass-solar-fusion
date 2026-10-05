@@ -454,7 +454,8 @@ class FusionEngine:
             scale = target_wh / fused_total
             fused = {slot: round(wh * scale, 1) for slot, wh in fused.items()}
 
-        uncertainty_pct = self._compute_uncertainty(raw_by_sid, weights, fused)
+        shaded_raw = {sid: raw_by_sid[sid] * ratios[sid] for sid in raw_by_sid}
+        uncertainty_pct = self._compute_uncertainty(shaded_raw, weights, fused)
         return fused, uncertainty_pct, weights
 
     def record_actual(
@@ -767,6 +768,10 @@ class FusionEngine:
         hourly slots instead collapses the spread – calibration pulls every
         source onto roughly the same daily total – which made the figure
         misleadingly low (e.g. 0.6 %).
+
+        With shading applied, ``raw_daily`` holds each raw total times the
+        source's kept share, the same basis as the fused total; otherwise the
+        spread would grow by 1 / share.
 
         Returns ``None`` when fewer than two sources are available (no
         cross-validation possible), so the sensor can show "unknown" instead of

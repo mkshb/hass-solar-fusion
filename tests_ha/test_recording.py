@@ -35,9 +35,7 @@ async def _start_after_midnight(hass, freezer, **extra):
 
 
 # Tageszähler mit Reset kurz nach Mitternacht: am Vorabend 31,4 kWh (Übertrag
-# ins Fenster des 03.10.), dann Reset und 25,0 kWh Tagesertrag. Ein Reset auf
-# genau 00:00:00.000 ginge verloren (HA liefert nur Änderungen nach dem
-# Fensterbeginn, der Übertrag erscheint mit Zeitstempel = Fensterbeginn).
+# ins Fenster des 03.10.), dann Reset und 25,0 kWh Tagesertrag.
 DAILY_RESET = [
     ("2026-10-02", 18, 0, 31.4),
     (DAY, 0, 1, 0.0),
@@ -64,6 +62,34 @@ async def test_records_yesterday_against_morning_snapshot(hass_tz, freezer, hass
     assert records["solcast"]["forecast_kwh"] == 28.0
     # Übertrag vom Vortag (31,4) zählt nicht
     assert all(r["actual_kwh"] == 25.0 for r in records.values())
+
+
+async def test_reset_at_exactly_midnight(hass_tz, freezer, hass_storage):
+    # HA liefert nur Änderungen nach dem Abfragebeginn; die Abfrage beginnt
+    # deshalb kurz vor Mitternacht, sonst fehlte das erste Delta (22 statt 25).
+    hass = hass_tz
+    await _write_states(hass, freezer, PV, [
+        ("2026-10-02", 18, 0, 31.4),
+        (DAY, 0, 0, 0.0),
+        (DAY, 9, 0, 3.0),
+        (DAY, 18, 0, 25.0),
+    ])
+    hass_storage[STORE_KEY] = _store()
+    _, coord = await _start_after_midnight(hass, freezer)
+    assert {r["actual_kwh"] for r in coord.history} == {25.0}
+
+
+async def test_daily_meter_without_total_increasing_ignores_carryover(
+    hass_tz, freezer, hass_storage
+):
+    # Ohne total_increasing zählt das Maximum des Tages; der Übertrag vom
+    # Vortag (31,4) darf nicht das Maximum sein.
+    hass = hass_tz
+    attrs = {"unit_of_measurement": "kWh", "device_class": "energy"}
+    await _write_states(hass, freezer, PV, DAILY_RESET, attrs=attrs)
+    hass_storage[STORE_KEY] = _store()
+    _, coord = await _start_after_midnight(hass, freezer)
+    assert {r["actual_kwh"] for r in coord.history} == {25.0}
 
 
 async def test_lifetime_counter(hass_tz, freezer, hass_storage):

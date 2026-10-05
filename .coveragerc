@@ -1,0 +1,10 @@
+# Abdeckung aus HA-freien Tests (tests/) und Integrationstests (tests_ha/),
+# zusammengeführt mit `coverage combine` (siehe .github/workflows/tests.yaml).
+[run]
+source = custom_components/solar_fusion
+parallel = true
+
+[report]
+fail_under = 90
+show_missing = true
+skip_covered = true

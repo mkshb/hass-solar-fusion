@@ -27,7 +27,7 @@ jobs:
           done
 
   integration:
-    name: Integration tests (Home Assistant)
+    name: Integration tests (Home Assistant) and coverage
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -38,5 +38,12 @@ jobs:
           cache-dependency-path: requirements_test.txt
       - name: Install test requirements
         run: pip install -r requirements_test.txt
-      - name: Run integration tests
-        run: pytest tests_ha
+      - name: Run unit and integration tests with coverage
+        run: |
+          coverage run -m pytest tests
+          coverage run -m pytest tests_ha
+          coverage combine
+      - name: Coverage report
+        run: |
+          coverage report --format=markdown >> "$GITHUB_STEP_SUMMARY" || true
+          coverage report

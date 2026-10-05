@@ -66,6 +66,30 @@ def test_wh_period_keys_are_period_start():
     }
 
 
+def test_dst_end_sums_the_doubled_hour():
+    # 25.10.2026: 02:00–03:00 gibt es zweimal (CEST, dann CET)
+    raw = {
+        "2026-10-25T01:00:00+02:00": 1,
+        "2026-10-25T02:00:00+02:00": 2,
+        "2026-10-25T02:00:00+01:00": 3,
+        "2026-10-25T03:00:00+01:00": 4,
+    }
+    assert sr._extract_wh_hours(raw) == {
+        "2026-10-25T01:00": 1.0,
+        "2026-10-25T02:00": 5.0,
+        "2026-10-25T03:00": 4.0,
+    }
+    # Periodenende (Forecast.Solar): 03:00+01:00 ist das Ende der zweiten 02-Uhr-Stunde
+    end = {"2026-10-25T02:00:00+01:00": 2, "2026-10-25T03:00:00+01:00": 3}
+    assert sr._extract_wh_hours(end, period_end=True) == {"2026-10-25T02:00": 5.0}
+
+
+def test_dst_start_has_no_02_slot():
+    # 29.03.2026: auf 01:59 CET folgt 03:00 CEST
+    raw = {"2026-03-29T01:00:00+01:00": 1, "2026-03-29T03:00:00+02:00": 2}
+    assert sr._extract_wh_hours(raw) == {"2026-03-29T01:00": 1.0, "2026-03-29T03:00": 2.0}
+
+
 def test_wh_hours_period_end_moves_to_previous_hour():
     # Forecast.Solar-API: Wert gilt vom letzten bis zu diesem Zeitstempel
     raw = {
