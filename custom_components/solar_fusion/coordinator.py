@@ -363,30 +363,13 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         if not pv_entities:
             return
 
-        daily_meter_entity = self._find_daily_meter_entity()
-
         yesterday = dt_util.now().date() - timedelta(days=1)
         date_str = yesterday.isoformat()
 
         if any(r["date"] == date_str for r in self._history):
             return  # already recorded
 
-        # Prefer the integrated daily meter (most accurate, single entity)
-        if daily_meter_entity:
-            actual_kwh = await self._async_read_actual_from_history(daily_meter_entity, yesterday)
-        else:
-            actual_kwh = None
-
-        # Fall back to summing individual PV sensors
-        if actual_kwh is None:
-            total = 0.0
-            any_found = False
-            for entity_id in pv_entities:
-                kwh = await self._async_read_actual_from_history(entity_id, yesterday)
-                if kwh is not None:
-                    total += kwh
-                    any_found = True
-            actual_kwh = total if any_found else None
+        actual_kwh = await self._async_read_daily_actual(yesterday, pv_entities)
 
         if actual_kwh is None:
             _LOGGER.debug("No actual production data found for %s", date_str)
@@ -460,25 +443,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         repaired = 0
         skipped = 0
         unchanged = 0
-        daily_meter = self._find_daily_meter_entity()
 
         for date_str in all_dates:
             target = date.fromisoformat(date_str)
-
-            if daily_meter:
-                actual_kwh = await self._async_read_actual_from_history(daily_meter, target)
-            else:
-                actual_kwh = None
-
-            if actual_kwh is None:
-                total = 0.0
-                any_found = False
-                for entity_id in pv_entities:
-                    kwh = await self._async_read_actual_from_history(entity_id, target)
-                    if kwh is not None:
-                        total += kwh
-                        any_found = True
-                actual_kwh = total if any_found else None
+            actual_kwh = await self._async_read_daily_actual(target, pv_entities)
 
             if actual_kwh is None:
                 _LOGGER.debug("repair_history: no recorder data for %s – skipping", date_str)
@@ -565,6 +533,41 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             return registry.async_get_entity_id("sensor", DOMAIN, target_unique_id)
         except Exception:  # noqa: BLE001
             return None
+
+    async def _async_read_daily_actual(
+        self, target_date: date, pv_entities: List[str]
+    ) -> Optional[float]:
+        """Tages-Ist (kWh) eines abgeschlossenen Tages.
+
+        1. Langzeitstatistik der konfigurierten PV-Sensoren, wenn sie den Tag
+           vollständig abdeckt: zeitgewichtet (Leistung) bzw. mit Rücksetzungen
+           (Zähler) korrekt, und dieselbe Quelle wie die Stunden-Istwerte fürs
+           Lernen. Ein Wechsel der Sensoren wirkt damit auch rückwirkend.
+        2. Fehlen nur die letzten Stunden (Statistik kurz nach Mitternacht noch
+           nicht geschrieben): None, das nächste Update versucht es erneut.
+        3. Sonst der eigene Tageszähler, dann die Zustände der PV-Sensoren.
+        """
+        if pv_entities:
+            hourly, status = await self._async_hourly_statistics_status(pv_entities, target_date)
+            if status == "complete":
+                return round(sum(hourly.values()) / 1000.0, 3)
+            if status == "pending":
+                return None
+
+        daily_meter = self._find_daily_meter_entity()
+        if daily_meter:
+            actual_kwh = await self._async_read_actual_from_history(daily_meter, target_date)
+            if actual_kwh is not None:
+                return actual_kwh
+
+        total = 0.0
+        any_found = False
+        for entity_id in pv_entities:
+            kwh = await self._async_read_actual_from_history(entity_id, target_date)
+            if kwh is not None:
+                total += kwh
+                any_found = True
+        return total if any_found else None
 
     async def _async_read_actual_from_history(
         self, entity_id: str, target_date: date
@@ -676,6 +679,18 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     async def _async_hourly_statistics(
         self, entity_ids: List[str], target_date: date
     ) -> Optional[Dict[str, float]]:
+        hourly, status = await self._async_hourly_statistics_status(entity_ids, target_date)
+        return hourly if status != "none" else None
+
+    async def _async_hourly_statistics_status(
+        self, entity_ids: List[str], target_date: date
+    ) -> Tuple[Dict[str, float], str]:
+        """({"HH": Wh}, Status) aus der Langzeitstatistik.
+
+        Status: "complete" (jede Entität hat jede Stunde des Tages), "pending"
+        (nur die letzten Stunden fehlen und der Tag ist höchstens 3 h vorbei),
+        "partial" (Lücken) oder "none" (keine Statistik).
+        """
         try:
             from homeassistant.components.recorder import get_instance
             from homeassistant.components.recorder.statistics import (
@@ -701,11 +716,16 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             )
         except Exception as err:  # noqa: BLE001
             _LOGGER.warning("Could not read hourly statistics for %s: %s", entity_ids, err)
-            return None
+            return {}, "none"
 
+        start_utc, end_utc = dt_util.as_utc(start), dt_util.as_utc(end)
+        n_hours = round((end_utc - start_utc).total_seconds() / 3600)   # 23/24/25
+        expected = {start_utc + timedelta(hours=i) for i in range(n_hours)}
         total: Dict[str, float] = {}
         found = False
+        complete = pending = True
         for entity_id in entity_ids:
+            seen = set()
             for row in stats.get(entity_id, []):
                 begin = row.get("start")
                 if isinstance(begin, (int, float)):
@@ -715,6 +735,8 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 local = dt_util.as_local(begin)
                 if local.date() != target_date:
                     continue
+                if row.get("change") is not None or row.get("mean") is not None:
+                    seen.add(dt_util.as_utc(begin))
                 if row.get("change") is not None:
                     wh = max(0.0, float(row["change"])) * 1000.0
                 elif row.get("mean") is not None:
@@ -724,9 +746,19 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                 key = f"{local.hour:02d}"
                 total[key] = total.get(key, 0.0) + wh
                 found = True
+            missing = expected - seen
+            if missing:
+                complete = False
+                if seen and min(missing) <= max(seen):
+                    pending = False   # Lücke mitten im Tag
         if not found:
-            return None
-        return {k: round(v, 1) for k, v in sorted(total.items())}
+            return {}, "none"
+        hourly = {k: round(v, 1) for k, v in sorted(total.items())}
+        if complete:
+            return hourly, "complete"
+        if pending and dt_util.utcnow() < end_utc + timedelta(hours=3):
+            return hourly, "pending"
+        return hourly, "partial"
 
     def _night_production_wh(self, day: str, actual: Dict[str, float]) -> float:
         """Ertrag in Stunden, in denen die Sonne durchgehend unter dem Horizont steht."""

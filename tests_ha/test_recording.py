@@ -1,5 +1,7 @@
 """Tages-Ist nach Mitternacht, repair_history und Abgleich beim Start (echter Recorder)."""
 import pytest
+from homeassistant.components.recorder.models import StatisticMeanType
+from homeassistant.components.recorder.statistics import async_import_statistics
 from pytest_homeassistant_custom_component.components.recorder.common import (
     async_wait_recording_done,
 )
@@ -121,7 +123,8 @@ async def test_power_sensor_uses_mean(hass_tz, freezer, hass_storage):
     ], attrs=watts)
     hass_storage[STORE_KEY] = _store()
     _, coord = await _start_after_midnight(hass, freezer)
-    # Mittel der Messwerte × 24 h: 2000 W → 48 kWh (keine Zeitgewichtung)
+    # Ohne Langzeitstatistik (Rückfall): Mittel der Messwerte × 24 h,
+    # 2000 W → 48 kWh (keine Zeitgewichtung)
     assert {r["actual_kwh"] for r in coord.history} == {48.0}
 
 
@@ -177,3 +180,54 @@ async def test_repair_history_action_with_date_range(hass_tz, freezer, hass_stor
     await hass.services.async_call(DOMAIN, "repair_history", {"date_from": DAY}, blocking=True)
     assert {r["actual_kwh"] for r in coord.history if r["date"] == DAY} == {25.0}
     assert [r["actual_kwh"] for r in coord.history if r["date"] == "2026-09-20"] == [11.0]
+
+
+WATTS = {"unit_of_measurement": "W", "state_class": "measurement", "device_class": "power"}
+
+
+def _import_power_statistics(hass, hours: dict, day: str = DAY):
+    """Stundenmittel in W für ``day``; nicht genannte Stunden 0 W."""
+    async_import_statistics(hass, {
+        "mean_type": StatisticMeanType.ARITHMETIC, "has_sum": False, "name": None,
+        "source": "recorder", "statistic_id": PV, "unit_class": "power",
+        "unit_of_measurement": "W",
+    }, [{"start": at(day, h), "mean": hours.get(h, 0.0), "min": 0.0, "max": hours.get(h, 0.0)}
+        for h in hours.get("range", range(24))])
+
+
+async def test_power_sensor_daily_actual_from_statistics(hass_tz, freezer, hass_storage):
+    # Zeitgewichtet aus den Stundenmitteln: 5 h × 2 kW = 10 kWh – nicht das
+    # Mittel der Zustandsänderungen × 24 h (48 kWh, siehe Rückfall oben)
+    hass = hass_tz
+    await _write_states(hass, freezer, PV, [(DAY, 10, 0, 1000.0), (DAY, 12, 0, 3000.0)], attrs=WATTS)
+    _import_power_statistics(hass, {h: 2000.0 for h in range(10, 15)})
+    await async_wait_recording_done(hass)
+    hass_storage[STORE_KEY] = _store()
+    _, coord = await _start_after_midnight(hass, freezer)
+    assert {r["actual_kwh"] for r in coord.history} == {10.0}
+
+
+async def test_waits_while_last_hours_are_missing(hass_tz, freezer, hass_storage):
+    # Kurz nach Mitternacht fehlt die Statistik der letzten Stunden noch:
+    # nicht aus dem Tageszähler raten, sondern beim nächsten Update erneut lesen
+    hass = hass_tz
+    await _write_states(hass, freezer, PV, [(DAY, 10, 0, 1000.0)], attrs=WATTS)
+    _import_power_statistics(hass, {"range": range(22), 12: 2000.0})
+    await async_wait_recording_done(hass)
+    hass_storage[STORE_KEY] = _store()
+    _, coord = await _start_after_midnight(hass, freezer)
+    assert coord.history == []
+
+
+async def test_gap_in_statistics_falls_back_to_states(hass_tz, freezer, hass_storage):
+    hass = hass_tz
+    await _write_states(hass, freezer, PV, DAILY_RESET)
+    async_import_statistics(hass, {
+        "mean_type": StatisticMeanType.NONE, "has_sum": True, "name": None,
+        "source": "recorder", "statistic_id": PV, "unit_class": "energy",
+        "unit_of_measurement": "kWh",
+    }, [{"start": at(DAY, h), "state": 1.0, "sum": float(h)} for h in range(24) if h != 12])
+    await async_wait_recording_done(hass)
+    hass_storage[STORE_KEY] = _store()
+    _, coord = await _start_after_midnight(hass, freezer)
+    assert {r["actual_kwh"] for r in coord.history} == {25.0}
