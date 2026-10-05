@@ -2,6 +2,7 @@
 import math
 import random
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from homeassistant.components.recorder.models import StatisticMeanType
@@ -13,6 +14,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 
 from custom_components.solar_fusion import calc
 
+ROOT_DIR = Path(__file__).resolve().parent.parent
 DOMAIN = "solar_fusion"
 ENTRY_ID = "e1"
 STORE_KEY = f"solar_fusion_history_{ENTRY_ID}"
