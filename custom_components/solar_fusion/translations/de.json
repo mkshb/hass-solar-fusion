@@ -9,6 +9,14 @@
           "sources": "Zu kombinierende Prognose-Integrationen"
         }
       },
+      "reconfigure": {
+        "title": "Solar Fusion – Neu konfigurieren",
+        "description": "Name der Instanz, zu kombinierende Prognose-Integrationen, deren Entitäten und PV-Produktionssensoren ändern. Feineinstellungen findest du unter **Konfigurieren**.\n\n{detected}",
+        "data": {
+          "instance_name": "Name dieser Instanz (z. B. 'Dach' oder 'Garage')",
+          "sources": "Zu kombinierende Prognose-Integrationen"
+        }
+      },
       "entities": {
         "title": "Solar Fusion – Entitäten bestätigen",
         "description": "Überprüfe, ob die Entitäts-IDs mit denen der jeweiligen Prognose-Integration übereinstimmen. {hint}",
@@ -38,36 +46,16 @@
       "no_sources": "Bitte mindestens eine Quelle auswählen."
     },
     "abort": {
-      "already_configured": "Solar Fusion ist bereits eingerichtet."
+      "already_configured": "Solar Fusion ist bereits eingerichtet.",
+      "reconfigure_successful": "Solar Fusion wurde neu konfiguriert und neu geladen."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Solar Fusion – Quellen",
-        "description": "{detected}",
-        "data": {
-          "instance_name": "Name dieser Instanz",
-          "sources": "Zu kombinierende Prognose-Integrationen"
-        }
-      },
-      "entities": {
-        "title": "Solar Fusion – Entitäten",
-        "description": "{hint}",
-        "data": {
-          "forecast_solar_today": "Forecast.Solar – Heute",
-          "forecast_solar_tomorrow": "Forecast.Solar – Morgen",
-          "open_meteo_solar_forecast_today": "Open-Meteo – Heute",
-          "open_meteo_solar_forecast_tomorrow": "Open-Meteo – Morgen",
-          "solcast_today": "Solcast – Heute",
-          "solcast_tomorrow": "Solcast – Morgen"
-        }
-      },
-      "settings": {
         "title": "Solar Fusion – Einstellungen",
-        "description": "{pv_hint}",
+        "description": "Quellen, Entitäten und PV-Sensoren lassen sich über **Neu konfigurieren** im Menü dieses Eintrags ändern.",
         "data": {
-          "pv_entities": "PV-Produktionssensoren (mehrere möglich)",
           "update_interval": "Aktualisierungsintervall (Minuten)",
           "exclusion_factor": "Ausschlussschwelle k (× RMSE der besten Quelle)",
           "min_eval_days": "Mindestzahl ausgewerteter Tage für die Gewichtung",

@@ -15,8 +15,9 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import slugify
 
 from .card import async_setup_card
-from .const import CONF_INSTANCE_NAME, DOMAIN, device_name
+from .const import CONF_INSTANCE_NAME, DOMAIN, OPTION_KEYS, device_name
 from .coordinator import SolarForecastCoordinator, SolarFusionConfigEntry
+from .migration import split_entry_options
 
 _LOGGER = logging.getLogger(__name__)
 PLATFORMS = [Platform.SENSOR]
@@ -103,6 +104,20 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
+    return True
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> bool:
+    """Config Entry auf Version 1.2 bringen (Tuning-Parameter in options)."""
+    if entry.version > 1:
+        # Eintrag einer neueren Version (Downgrade): nicht laden
+        return False
+    if entry.minor_version < 2:
+        data, options = split_entry_options(entry.data, entry.options, OPTION_KEYS)
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, minor_version=2
+        )
+        _LOGGER.debug("Migrated config entry %s to version 1.2", entry.entry_id)
     return True
 
 

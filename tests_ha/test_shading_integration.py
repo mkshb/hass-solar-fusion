@@ -77,7 +77,7 @@ async def test_learns_from_snapshots_and_applies(ready, hass_storage):
                for c in sensor.attributes["shaded_cells"])
 
     shaded = state(hass, "forecast_today")
-    hass.config_entries.async_update_entry(entry, data={**entry.data, "shading_apply": False})
+    hass.config_entries.async_update_entry(entry, options={**entry.options, "shading_apply": False})
     await hass.async_block_till_done()
     plain = state(hass, "forecast_today")
     slot = "2026-10-04T17:00"

@@ -16,6 +16,17 @@ CONF_SHADING_LEARN = "shading_learn"        # Verschattung aus Stunden-Ist lerne
 CONF_SHADING_APPLY = "shading_apply"        # gelernte Verschattung auf die Prognose anwenden
 CONF_HORIZON_SOURCES = "horizon_sources"    # list[str] – Quellen, die schon einen Horizont enthalten
 
+# Tuning-Parameter: ab Config-Entry-Version 1.2 in entry.options (Options-Flow),
+# Quellen, Entitäten, PV-Sensoren und Name bleiben in entry.data (Reconfigure).
+OPTION_KEYS = (
+    CONF_UPDATE_INTERVAL,
+    CONF_EXCLUSION_FACTOR,
+    CONF_MIN_EVAL_DAYS,
+    CONF_SHADING_LEARN,
+    CONF_SHADING_APPLY,
+    CONF_HORIZON_SOURCES,
+)
+
 def device_name(instance_name: str) -> str:
     """Name des Geräts einer Instanz; Entitätsnamen hängen ihn voran (has_entity_name)."""
     instance = (instance_name or "").strip()

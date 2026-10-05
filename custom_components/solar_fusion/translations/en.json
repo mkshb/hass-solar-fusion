@@ -9,6 +9,14 @@
           "sources": "Forecast integrations to combine"
         }
       },
+      "reconfigure": {
+        "title": "Solar Fusion – Reconfigure",
+        "description": "Change the instance name, the forecast integrations to combine, their entities and the PV production sensors. Tuning parameters are under **Configure**.\n\n{detected}",
+        "data": {
+          "instance_name": "Name for this instance (e.g. 'Roof' or 'Garage')",
+          "sources": "Forecast integrations to combine"
+        }
+      },
       "entities": {
         "title": "Solar Fusion – Confirm Entity IDs",
         "description": "Verify the entity IDs match those created by each forecast integration. {hint}",
@@ -38,36 +46,16 @@
       "no_sources": "Please select at least one source."
     },
     "abort": {
-      "already_configured": "Solar Fusion is already configured."
+      "already_configured": "Solar Fusion is already configured.",
+      "reconfigure_successful": "Solar Fusion has been reconfigured and reloaded."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Solar Fusion – Sources",
-        "description": "{detected}",
-        "data": {
-          "instance_name": "Instance name",
-          "sources": "Forecast integrations to combine"
-        }
-      },
-      "entities": {
-        "title": "Solar Fusion – Entity IDs",
-        "description": "{hint}",
-        "data": {
-          "forecast_solar_today": "Forecast.Solar – Today",
-          "forecast_solar_tomorrow": "Forecast.Solar – Tomorrow",
-          "open_meteo_solar_forecast_today": "Open-Meteo – Today",
-          "open_meteo_solar_forecast_tomorrow": "Open-Meteo – Tomorrow",
-          "solcast_today": "Solcast – Today",
-          "solcast_tomorrow": "Solcast – Tomorrow"
-        }
-      },
-      "settings": {
         "title": "Solar Fusion – Settings",
-        "description": "{pv_hint}",
+        "description": "Sources, entities and PV sensors can be changed via **Reconfigure** in the menu of this entry.",
         "data": {
-          "pv_entities": "PV production sensors (multiple supported)",
           "update_interval": "Update interval (minutes)",
           "exclusion_factor": "Exclusion threshold k (× RMSE of the best source)",
           "min_eval_days": "Minimum evaluated days for weighting",

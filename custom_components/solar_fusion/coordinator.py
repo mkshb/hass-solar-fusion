@@ -77,7 +77,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     """
 
     def __init__(self, hass: HomeAssistant, entry: SolarFusionConfigEntry) -> None:
+        # Quellen, Entitäten und PV-Sensoren; Tuning-Parameter über _option()
         self._config = entry.data
+        self._options = entry.options
         self._entry = entry
         self._store = _SolarFusionStore(hass, STORAGE_VERSION, STORAGE_KEY + "_" + entry.entry_id)
         self._history: List[Dict] = []
@@ -108,9 +110,13 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(
-                minutes=self._config.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+                minutes=self._option(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
             ),
         )
+
+    def _option(self, key: str, default: Any) -> Any:
+        """Tuning-Parameter: options, sonst data (Eintrag vor Version 1.2), sonst Standard."""
+        return self._options.get(key, self._config.get(key, default))
 
     async def async_setup(self) -> None:
         """Load persisted data and register time-based callbacks."""
@@ -132,15 +138,15 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._fusion = FusionEngine(
             self._history,
             exclusion_factor=float(
-                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+                self._option(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
             ),
             min_eval_days=int(
-                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+                self._option(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
             ),
             calibration_state=self._calibration_state,
             shading_cells=self._shading.get("cells") or {},
             shading_apply=self._shading_apply,
-            horizon_sources=self._config.get(CONF_HORIZON_SOURCES, []),
+            horizon_sources=self._option(CONF_HORIZON_SOURCES, []),
             location=(self.hass.config.latitude, self.hass.config.longitude),
         )
         # Karte mit den aktuellen Einstellungen (z. B. Horizont-Quellen) neu lernen
@@ -233,7 +239,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # ── 3. Record yesterday's actuals if not yet done ──────────────────
         await self._async_maybe_record_yesterday(readings)
-        if self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN):
+        if self._option(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN):
             await self._async_maybe_learn_shading()
 
         # ── 4. Fuse forecasts ──────────────────────────────────────────────
@@ -296,10 +302,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         plain = FusionEngine(
             self._history,
             exclusion_factor=float(
-                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+                self._option(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
             ),
             min_eval_days=int(
-                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+                self._option(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
             ),
             calibration_state=dict(self._calibration_state),
         )
@@ -320,7 +326,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
     @property
     def _shading_apply(self) -> bool:
-        return bool(self._config.get(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY))
+        return bool(self._option(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Morning snapshot
@@ -523,9 +529,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     @property
     def shading_settings(self) -> Dict[str, Any]:
         return {
-            "learn": bool(self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN)),
+            "learn": bool(self._option(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN)),
             "apply": self._shading_apply,
-            "horizon_sources": list(self._config.get(CONF_HORIZON_SOURCES, [])),
+            "horizon_sources": list(self._option(CONF_HORIZON_SOURCES, [])),
             "active": bool(self._fusion and self._fusion.shading_active),
         }
 
@@ -848,7 +854,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             dt_util.get_default_time_zone(),
         )
         cells, used = calc.learn_shading_map(
-            days, excluded_sources=self._config.get(CONF_HORIZON_SOURCES, [])
+            days, excluded_sources=self._option(CONF_HORIZON_SOURCES, [])
         )
         self._shading["cells"] = cells
         self._shading["used_days"] = used
