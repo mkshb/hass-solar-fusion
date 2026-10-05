@@ -96,6 +96,7 @@ def detect_available_sources(hass: HomeAssistant) -> List[str]:
     """
     Scan the HA entity registry for entities from known forecast integrations.
     Uses domain-based lookup so localised entity IDs are found correctly.
+    Reads registry and state machine only, so it must run in the event loop.
     """
     from homeassistant.helpers import entity_registry as er
 

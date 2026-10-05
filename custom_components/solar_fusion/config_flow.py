@@ -75,9 +75,7 @@ class SolarFusionConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Step 1: detect installed sources, let user select which to combine."""
-        self._detected = await self.hass.async_add_executor_job(
-            detect_available_sources, self.hass
-        )
+        self._detected = detect_available_sources(self.hass)
 
         if user_input is not None:
             self._selected = user_input[CONF_SOURCES]
@@ -237,9 +235,7 @@ class SolarFusionOptionsFlow(config_entries.OptionsFlow):
         self, user_input: Optional[Dict[str, Any]] = None
     ) -> FlowResult:
         """Step 1: instance name + source selection."""
-        detected = await self.hass.async_add_executor_job(
-            detect_available_sources, self.hass
-        )
+        detected = detect_available_sources(self.hass)
         current_sources: List[str] = self._current.get(CONF_SOURCES, [])
         current_name: str = self._current.get(CONF_INSTANCE_NAME, "")
 
