@@ -391,6 +391,10 @@ class FusedForecastSensor(CoordinatorEntity, SensorEntity):
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
     _attr_icon = "mdi:solar-power"
+    # Für die Karte; im Recorder nur Ballast bei jedem Update
+    _unrecorded_attributes = frozenset(
+        {"sources", "history", "hourly_forecast_wh", "unshaded_hourly_wh"}
+    )
 
     def __init__(self, coordinator, entry, day: str) -> None:
         super().__init__(coordinator)
@@ -478,6 +482,7 @@ class FusedHourlySensor(CoordinatorEntity, SensorEntity):
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:chart-bell-curve-cumulative"
+    _unrecorded_attributes = frozenset({"forecast"})
     _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = UnitOfEnergy.KILO_WATT_HOUR
 
@@ -624,6 +629,7 @@ class SourceQualitySensor(CoordinatorEntity, SensorEntity):
 class MorningSnapshotSensor(CoordinatorEntity, SensorEntity):
     _attr_has_entity_name = True
     _attr_icon = "mdi:weather-sunset-up"
+    _unrecorded_attributes = frozenset({"history"})
     _attr_native_unit_of_measurement = None
 
     def __init__(self, coordinator: SolarForecastCoordinator, entry: ConfigEntry) -> None:
@@ -669,6 +675,7 @@ class ShadingSensor(CoordinatorEntity, SensorEntity):
 
     _attr_has_entity_name = True
     _attr_icon = "mdi:weather-partly-cloudy"
+    _unrecorded_attributes = frozenset({"shaded_cells", "raised_cells", "energy_kept"})
     _attr_entity_category = EntityCategory.DIAGNOSTIC
     _attr_state_class = SensorStateClass.MEASUREMENT
 
