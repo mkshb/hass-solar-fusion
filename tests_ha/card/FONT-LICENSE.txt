@@ -1,6 +1,8 @@
-Roboto-Regular.woff2 and Roboto-Medium.woff2: Roboto by Christian Robertson,
-Copyright 2011 Google Inc., converted from the Debian package fonts-roboto-unhinted.
-Used only to render the card in tests_ha/test_card_screenshot.py.
+Roboto-Regular.woff2 and Roboto-Medium.woff2: Roboto 2.137 by Christian Robertson,
+Copyright 2011 Google Inc. Taken unchanged from the Home Assistant frontend
+(PyPI package home-assistant-frontend 20260826.7, hass_frontend/static/fonts/roboto/,
+used by Home Assistant 2026.9), so the card renders with the font it has in
+Home Assistant. Used only to render the card in tests_ha/test_card_screenshot.py.
 Licensed under the Apache License, Version 2.0:
 
 
