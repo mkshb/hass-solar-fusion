@@ -7,8 +7,9 @@ from functools import partial
 from typing import Any, Dict, List, Optional, Tuple
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_change
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.event import async_track_state_change_event, async_track_time_change
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 from homeassistant.util import dt as dt_util
@@ -40,6 +41,7 @@ from .source_reader import (
     SourceUnavailable,
     hourly_from_attributes,
     read_source,
+    resolve_entities,
     today_entity_id,
 )
 
@@ -50,6 +52,12 @@ _SNAPSHOT_HOUR = 6
 # Rückwirkendes Lernen: spätester Zeitpunkt (Stunde), bis zu dem ein Zustand
 # der Quellentität noch als Morgenprognose gilt
 _RETRO_LATEST_HOUR = 9
+# Kehrt eine Quelle zurück, schreibt ihre Integration heute und morgen meist
+# kurz nacheinander; so lange warten, um beide in einem Refresh zu lesen.
+_RECOVERY_DELAY_S = 2.0
+
+
+type SolarFusionConfigEntry = ConfigEntry[SolarForecastCoordinator]
 
 
 class _SolarFusionStore(Store):
@@ -73,8 +81,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     updates are ignored for accuracy tracking.
     """
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, entry: SolarFusionConfigEntry) -> None:
+        # Quellen, Entitäten und PV-Sensoren; Tuning-Parameter über _option()
         self._config = entry.data
+        self._options = entry.options
         self._entry = entry
         self._store = _SolarFusionStore(hass, STORAGE_VERSION, STORAGE_KEY + "_" + entry.entry_id)
         self._history: List[Dict] = []
@@ -97,15 +107,21 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._shading_attempted: Dict[str, datetime] = {}
         # {source_id: bool} – letzte Kalibrierungs-Entscheidung (Hysterese) – persisted
         self._calibration_state: Dict[str, bool] = {}
+        # Quellen, deren Ausfall schon geloggt ist (einmal beim Wegfall, einmal bei Rückkehr)
+        self._unavailable_sources: set[str] = set()
 
         super().__init__(
             hass,
             _LOGGER,
             name=DOMAIN,
             update_interval=timedelta(
-                minutes=self._config.get(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
+                minutes=self._option(CONF_UPDATE_INTERVAL, DEFAULT_UPDATE_INTERVAL)
             ),
         )
+
+    def _option(self, key: str, default: Any) -> Any:
+        """Tuning-Parameter: options, sonst data (Eintrag vor Version 1.2), sonst Standard."""
+        return self._options.get(key, self._config.get(key, default))
 
     async def async_setup(self) -> None:
         """Load persisted data and register time-based callbacks."""
@@ -127,15 +143,15 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         self._fusion = FusionEngine(
             self._history,
             exclusion_factor=float(
-                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+                self._option(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
             ),
             min_eval_days=int(
-                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+                self._option(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
             ),
             calibration_state=self._calibration_state,
             shading_cells=self._shading.get("cells") or {},
             shading_apply=self._shading_apply,
-            horizon_sources=self._config.get(CONF_HORIZON_SOURCES, []),
+            horizon_sources=self._option(CONF_HORIZON_SOURCES, []),
             location=(self.hass.config.latitude, self.hass.config.longitude),
         )
         # Karte mit den aktuellen Einstellungen (z. B. Horizont-Quellen) neu lernen
@@ -144,7 +160,25 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # Reconcile history against the recorder (fixes legacy carryover corruption)
         if self._history:
-            self.hass.async_create_task(self._async_reconcile_history_on_startup())
+            self.config_entry.async_create_background_task(
+                self.hass,
+                self._async_reconcile_history_on_startup(),
+                f"{DOMAIN} reconcile history",
+            )
+
+        # Fehlende Quelle wieder da: gleich neu fusionieren, nicht erst im nächsten Intervall
+        self._source_by_entity = self._source_entities()
+        self._recovery = Debouncer(
+            self.hass, _LOGGER, cooldown=_RECOVERY_DELAY_S, immediate=False,
+            function=self.async_refresh,
+        )
+        self.config_entry.async_on_unload(self._recovery.async_cancel)
+        if self._source_by_entity:
+            self.config_entry.async_on_unload(
+                async_track_state_change_event(
+                    self.hass, list(self._source_by_entity), self._async_source_changed
+                )
+            )
 
         # Register 06:00 snapshot trigger
         self.config_entry.async_on_unload(
@@ -169,6 +203,29 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         else:
             self._snapshot_pending = False
 
+    def _source_entities(self) -> Dict[str, str]:
+        """{entity_id: source_id} der Entitäten, die die Quellen lesen."""
+        entity_map: Dict[str, Dict] = self._config.get("entity_map", {})
+        out: Dict[str, str] = {}
+        for source_id in self._config.get(CONF_SOURCES, []):
+            resolved = resolve_entities(self.hass, source_id, entity_map.get(source_id, {}))
+            for entity_id in resolved or ():
+                out[entity_id] = source_id
+        return out
+
+    @callback
+    def _async_source_changed(self, event: Event) -> None:
+        """Zustandsänderung einer Quellentität; nur für ausgefallene Quellen relevant."""
+        source_id = self._source_by_entity.get(event.data["entity_id"])
+        new_state = event.data.get("new_state")
+        if (
+            source_id not in self._unavailable_sources
+            or new_state is None
+            or new_state.state in ("unknown", "unavailable")
+        ):
+            return
+        self.hass.async_create_task(self._recovery.async_call())
+
     @callback
     def _async_take_morning_snapshot(self, now: datetime) -> None:
         """Triggered at 06:00 – schedule a snapshot on next data update."""
@@ -192,6 +249,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             try:
                 reading = read_source(self.hass, source_id, source_entity_map)
                 readings.append(reading)
+                if source_id in self._unavailable_sources:
+                    self._unavailable_sources.discard(source_id)
+                    _LOGGER.info(
+                        "%s is available again", SOURCE_NAMES.get(source_id, source_id)
+                    )
                 _LOGGER.debug(
                     "Read %s: today=%.2f kWh, tomorrow=%.2f kWh",
                     SOURCE_NAMES.get(source_id, source_id),
@@ -199,7 +261,11 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
                     reading.tomorrow_kwh,
                 )
             except SourceUnavailable as err:
-                _LOGGER.warning("%s", err)
+                if source_id in self._unavailable_sources:
+                    _LOGGER.debug("%s", err)
+                else:
+                    self._unavailable_sources.add(source_id)
+                    _LOGGER.warning("%s", err)
                 missing.append(source_id)
 
         if not readings:
@@ -215,7 +281,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
         # ── 3. Record yesterday's actuals if not yet done ──────────────────
         await self._async_maybe_record_yesterday(readings)
-        if self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN):
+        if self._option(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN):
             await self._async_maybe_learn_shading()
 
         # ── 4. Fuse forecasts ──────────────────────────────────────────────
@@ -278,10 +344,10 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
         plain = FusionEngine(
             self._history,
             exclusion_factor=float(
-                self._config.get(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
+                self._option(CONF_EXCLUSION_FACTOR, calc.DEFAULT_EXCLUSION_FACTOR)
             ),
             min_eval_days=int(
-                self._config.get(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
+                self._option(CONF_MIN_EVAL_DAYS, calc.DEFAULT_MIN_EVAL_DAYS)
             ),
             calibration_state=dict(self._calibration_state),
         )
@@ -302,7 +368,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
 
     @property
     def _shading_apply(self) -> bool:
-        return bool(self._config.get(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY))
+        return bool(self._option(CONF_SHADING_APPLY, DEFAULT_SHADING_APPLY))
 
     # ──────────────────────────────────────────────────────────────────────────
     # Morning snapshot
@@ -505,9 +571,9 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
     @property
     def shading_settings(self) -> Dict[str, Any]:
         return {
-            "learn": bool(self._config.get(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN)),
+            "learn": bool(self._option(CONF_SHADING_LEARN, DEFAULT_SHADING_LEARN)),
             "apply": self._shading_apply,
-            "horizon_sources": list(self._config.get(CONF_HORIZON_SOURCES, [])),
+            "horizon_sources": list(self._option(CONF_HORIZON_SOURCES, [])),
             "active": bool(self._fusion and self._fusion.shading_active),
         }
 
@@ -830,7 +896,7 @@ class SolarForecastCoordinator(DataUpdateCoordinator):
             dt_util.get_default_time_zone(),
         )
         cells, used = calc.learn_shading_map(
-            days, excluded_sources=self._config.get(CONF_HORIZON_SOURCES, [])
+            days, excluded_sources=self._option(CONF_HORIZON_SOURCES, [])
         )
         self._shading["cells"] = cells
         self._shading["used_days"] = used

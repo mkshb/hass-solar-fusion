@@ -1,7 +1,11 @@
 """Sensor-Attribute und Warnungen beim Anlegen."""
+from homeassistant.components.recorder import get_instance, history
 from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.components.recorder.common import (
+    async_wait_recording_done,
+)
 
-from common import DOMAIN, ENTRY_ID, STORE_KEY, make_entry, set_sources, setup_entry, state
+from common import DOMAIN, ENTRY_ID, SC, STORE_KEY, make_entry, set_sources, setup_entry, state
 
 
 async def test_forecast_sensors_have_no_invalid_state_class(berlin, caplog):
@@ -83,3 +87,45 @@ async def test_history_attribute_covers_14_days_for_all_sources(berlin, hass_sto
     dates = sorted({r["date"] for r in records})
     assert dates[0] == "2026-09-20" and dates[-1] == "2026-10-03"
     assert len(dates) == 14 and len(records) == 42
+
+
+async def test_large_attributes_are_not_recorded(berlin):
+    hass = berlin
+    set_sources(hass)
+    await setup_entry(hass)
+    await async_wait_recording_done(hass)
+    expected = {
+        "forecast_today": {"sources", "history", "hourly_forecast_wh", "unshaded_hourly_wh"},
+        "forecast_this_hour": {"forecast"},
+        "diagnostics_morning_snapshot": {"history"},
+        "diagnostics_shading": {"shaded_cells", "raised_cells", "energy_kept"},
+    }
+    for suffix, unrecorded in expected.items():
+        current = state(hass, suffix)
+        assert unrecorded <= set(current.attributes), suffix
+        recorded = await get_instance(hass).async_add_executor_job(
+            history.get_last_state_changes, hass, 1, current.entity_id)
+        attrs = recorded[current.entity_id][0].attributes
+        assert not unrecorded & set(attrs), suffix
+        assert "friendly_name" in attrs
+
+
+async def test_missing_source_is_logged_once(berlin, caplog):
+    hass = berlin
+    set_sources(hass)
+    _, coord = await setup_entry(hass)
+    hass.states.async_set(SC, "unavailable")
+    caplog.clear()
+    for _ in range(3):
+        await coord.async_refresh()
+    warnings = [r for r in caplog.records
+                if r.levelname == "WARNING" and SC in r.getMessage()]
+    assert len(warnings) == 1
+    assert coord.data["missing_sources"] == ["solcast"]
+
+    set_sources(hass)
+    caplog.clear()
+    await coord.async_refresh()
+    await coord.async_refresh()
+    assert caplog.text.count("Solcast PV Forecast is available again") == 1
+    assert coord.data["missing_sources"] == []

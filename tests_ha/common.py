@@ -13,6 +13,7 @@ from pytest_homeassistant_custom_component.components.recorder.common import (
 )
 
 from custom_components.solar_fusion import calc
+from custom_components.solar_fusion.const import OPTION_KEYS
 
 ROOT_DIR = Path(__file__).resolve().parent.parent
 DOMAIN = "solar_fusion"
@@ -105,15 +106,23 @@ async def import_pv_statistics(hass, statistic_id: str = PV, days=DAYS) -> None:
 
 
 def make_entry(**extra) -> MockConfigEntry:
-    return MockConfigEntry(domain=DOMAIN, entry_id=ENTRY_ID, title="Solar Fusion – Test", data={
-        "sources": ["open_meteo_solar_forecast", "solcast"],
-        "instance_name": "Test",
-        "entity_map": {
-            "open_meteo_solar_forecast": {"today": OM, "tomorrow": OM_TOM},
-            "solcast": {"today": SC, "tomorrow": SC_TOM},
+    """Eintrag in Version 1.2; Tuning-Parameter aus ``extra`` landen in options."""
+    options = {"update_interval": 60}
+    options.update({k: v for k, v in extra.items() if k in OPTION_KEYS})
+    data = {k: v for k, v in extra.items() if k not in OPTION_KEYS}
+    return MockConfigEntry(
+        domain=DOMAIN, entry_id=ENTRY_ID, title="Solar Fusion – Test", version=1, minor_version=2,
+        data={
+            "sources": ["open_meteo_solar_forecast", "solcast"],
+            "instance_name": "Test",
+            "entity_map": {
+                "open_meteo_solar_forecast": {"today": OM, "tomorrow": OM_TOM},
+                "solcast": {"today": SC, "tomorrow": SC_TOM},
+            },
+            "pv_entities": [PV], "pv_entity": PV, **data,
         },
-        "pv_entities": [PV], "pv_entity": PV, "update_interval": 60, **extra,
-    })
+        options=options,
+    )
 
 
 async def setup_entry(hass, **extra):
@@ -121,7 +130,7 @@ async def setup_entry(hass, **extra):
     entry.add_to_hass(hass)
     assert await hass.config_entries.async_setup(entry.entry_id)
     await hass.async_block_till_done()
-    return entry, hass.data[DOMAIN][ENTRY_ID]
+    return entry, entry.runtime_data
 
 
 def state(hass, suffix: str):

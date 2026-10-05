@@ -87,11 +87,13 @@ The default entity IDs used by each integration are pre-filled. Adjust only if y
 
 **Open-Meteo entity discovery:** Open-Meteo Solar Forecast uses the same approach — Solar Fusion resolves its entities via the registry to avoid collisions with Forecast.Solar (both share the default name `sensor.energy_production_today`). Localised names (e.g. `_heute` / `_morgen` or `_energy_today` / `_energy_tomorrow`) are found automatically.
 
+The dialog checks the entities that will actually be read: they must exist, and a value present must be a number in kWh. An entity that is `unavailable` right now is accepted if its registered unit fits.
+
 ### Step 3 – Settings
-- **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
+- **PV production sensor(s)** *(optional)*: Select your actual generation sensor(s). Multiple sensors are supported and summed automatically (e.g. roof + garage). Each must be an energy sensor in kWh or a power sensor in W or kW. This enables accuracy tracking, adaptive weighting and isotonic calibration. Without it, equal weights are used permanently.
 - **Update interval**: How often Solar Fusion re-reads the source entities (default: 60 min).
 
-All settings can be changed later via **Settings → Devices & Services → Solar Fusion → Configure**. The **Configure** dialog additionally offers two weighting options:
+Name, sources, entities and PV sensors can be changed later via **Settings → Devices & Services → Solar Fusion → ⋮ → Reconfigure**. The tuning parameters are under **Configure**: the update interval, two weighting options:
 - **Exclusion threshold k** (default 2.0): a source whose RMSE exceeds k × the RMSE of the best source gets weight 0. It keeps being evaluated and returns automatically once its error drops below the threshold.
 - **Minimum evaluated days** (default 7): until a source has this many evaluated days, it is weighted neutrally; if no source has enough days, all sources are weighted equally.
 
@@ -99,6 +101,8 @@ and three shading options (see [Shading by sun position](#shading-by-sun-positio
 - **Learn shading from hourly production** (default off)
 - **Apply learned shading to the forecast** (default on – has no effect until cells are learned, so turning on learning is enough; turn it off to inspect the learned map before it changes the forecast)
 - **Sources that already include a horizon profile** (default none), e.g. Open-Meteo with `use_horizon` enabled. These sources are neither corrected nor used for learning.
+
+Entries set up with version 0.4 or older are migrated on the first start of 0.5: the tuning parameters move from the entry's data into its options, their values stay the same.
 
 ---
 

@@ -33,6 +33,23 @@ def test_migration_v1_without_snapshots():
     assert migration.migrate_storage(1, {"history": []})["morning_snapshots"] == {}
 
 
+
+def test_split_entry_options_moves_tuning_keys():
+    keys = ("update_interval", "shading_learn", "min_eval_days")
+    data = {"sources": ["solcast"], "update_interval": 30, "shading_learn": True}
+    new_data, options = migration.split_entry_options(data, {}, keys)
+    assert new_data == {"sources": ["solcast"]}
+    assert options == {"update_interval": 30, "shading_learn": True}
+    assert data["update_interval"] == 30  # Eingabe unverändert
+
+
+def test_split_entry_options_keeps_existing_options():
+    new_data, options = migration.split_entry_options(
+        {"update_interval": 30}, {"update_interval": 45, "other": 1}, ("update_interval",))
+    assert new_data == {}
+    assert options == {"update_interval": 45, "other": 1}
+
+
 # ── plain-script runner (no pytest needed) ──────────────────────────────────
 
 if __name__ == "__main__":

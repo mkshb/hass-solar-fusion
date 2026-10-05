@@ -1,7 +1,7 @@
 """Migration der gespeicherten Daten (ohne Home-Assistant-Importe, testbar)."""
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Iterable, Mapping, Tuple
 
 
 def migrate_storage(old_major: int, data: Dict[str, Any]) -> Dict[str, Any]:
@@ -18,3 +18,17 @@ def migrate_storage(old_major: int, data: Dict[str, Any]) -> Dict[str, Any]:
             for d, v in (data.get("morning_snapshots") or {}).items()
         }
     return data
+
+
+def split_entry_options(
+    data: Mapping[str, Any], options: Mapping[str, Any], keys: Iterable[str]
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Config-Entry 1.1 → 1.2: Tuning-Parameter ``keys`` von data nach options.
+
+    Bis 0.4 schrieb der Options-Flow alle Einstellungen in data; options blieb
+    leer. Schon vorhandene options haben Vorrang. Nie gesetzte Schlüssel
+    bleiben ungesetzt, der Code nimmt dafür wie bisher den Standardwert.
+    """
+    new_data = dict(data)
+    moved = {key: new_data.pop(key) for key in keys if key in new_data}
+    return new_data, {**moved, **options}

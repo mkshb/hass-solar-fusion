@@ -6,7 +6,8 @@ from datetime import date
 
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant, ServiceCall, ServiceResponse, SupportsResponse
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
@@ -14,13 +15,24 @@ from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import slugify
 
 from .card import async_setup_card
-from .const import CONF_INSTANCE_NAME, DOMAIN, device_name
-from .coordinator import SolarForecastCoordinator
+from .const import CONF_INSTANCE_NAME, DOMAIN, OPTION_KEYS, device_name
+from .coordinator import SolarForecastCoordinator, SolarFusionConfigEntry
+from .migration import split_entry_options
 
 _LOGGER = logging.getLogger(__name__)
-PLATFORMS = ["sensor"]
+PLATFORMS = [Platform.SENSOR]
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+def _loaded_coordinators(hass: HomeAssistant) -> dict[str, SolarForecastCoordinator]:
+    """Coordinator je geladenem Eintrag: {entry_id: coordinator}."""
+    return {
+        entry.entry_id: entry.runtime_data
+        for entry in hass.config_entries.async_entries(DOMAIN)
+        if entry.state is ConfigEntryState.LOADED
+    }
+
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Set up Solar Fusion integration.
@@ -30,19 +42,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     may not discover energy.py and Solar Fusion won't appear in the Energy Dashboard
     as a forecast provider.
     """
-    hass.data.setdefault(DOMAIN, {})
     await async_setup_card(hass)
 
     async def handle_take_snapshot(call: ServiceCall) -> None:
         """Manually trigger a morning snapshot for all Solar Fusion instances."""
-        coordinators = [
-            c for c in hass.data.get(DOMAIN, {}).values()
-            if isinstance(c, SolarForecastCoordinator)
-        ]
+        coordinators = _loaded_coordinators(hass)
         if not coordinators:
             _LOGGER.warning("take_snapshot: no active Solar Fusion instances found")
             return
-        for coordinator in coordinators:
+        for coordinator in coordinators.values():
             await coordinator.async_take_snapshot_now()
 
     hass.services.async_register(DOMAIN, "take_snapshot", handle_take_snapshot)
@@ -54,14 +62,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         date_from: str | None = raw_from.isoformat() if isinstance(raw_from, date) else raw_from
         date_to: str | None = raw_to.isoformat() if isinstance(raw_to, date) else raw_to
 
-        coordinators = [
-            c for c in hass.data.get(DOMAIN, {}).values()
-            if isinstance(c, SolarForecastCoordinator)
-        ]
+        coordinators = _loaded_coordinators(hass)
         if not coordinators:
             _LOGGER.warning("repair_history: no active Solar Fusion instances found")
             return
-        for coordinator in coordinators:
+        for coordinator in coordinators.values():
             result = await coordinator.async_repair_history(
                 date_from=date_from, date_to=date_to
             )
@@ -79,10 +84,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def handle_learn_shading(call: ServiceCall) -> ServiceResponse:
         """Learn the shading map retroactively from the recorder."""
-        coordinators = {
-            entry_id: c for entry_id, c in hass.data.get(DOMAIN, {}).items()
-            if isinstance(c, SolarForecastCoordinator)
-        }
+        coordinators = _loaded_coordinators(hass)
         if not coordinators:
             _LOGGER.warning("learn_shading: no active Solar Fusion instances found")
             return {}
@@ -105,21 +107,36 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_migrate_entry(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> bool:
+    """Config Entry auf Version 1.2 bringen (Tuning-Parameter in options)."""
+    if entry.version > 1:
+        # Eintrag einer neueren Version (Downgrade): nicht laden
+        return False
+    if entry.minor_version < 2:
+        data, options = split_entry_options(entry.data, entry.options, OPTION_KEYS)
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, minor_version=2
+        )
+        _LOGGER.debug("Migrated config entry %s to version 1.2", entry.entry_id)
+    return True
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> bool:
     """Set up Solar Fusion from a config entry."""
     _async_fix_doubled_entity_ids(hass, entry)
     coordinator = SolarForecastCoordinator(hass, entry)
     await coordinator.async_setup()
-    await coordinator.async_config_entry_first_refresh()
-
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = coordinator
+    # Kein async_config_entry_first_refresh: Ohne verfügbare Quelle würde der
+    # Eintrag gar nicht laden (auch der PV-Tageszähler nicht). Die Prognose-
+    # Entitäten sind dann unavailable, bis eine Quelle Werte liefert.
+    await coordinator.async_refresh()
+    entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
 
 
-def _async_fix_doubled_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
+def _async_fix_doubled_entity_ids(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> None:
     """Entity-IDs mit doppeltem Gerätepräfix umbenennen.
 
     Bis 0.3.0 enthielten die Entitätsnamen das Gerätepräfix selbst
@@ -145,14 +162,11 @@ def _async_fix_doubled_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> No
         registry.async_update_entity(reg_entry.entity_id, new_entity_id=new_id)
 
 
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+async def async_unload_entry(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> bool:
     """Unload a config entry."""
-    ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if ok:
-        hass.data[DOMAIN].pop(entry.entry_id)
-    return ok
+    return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
 
 
-async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:
+async def _async_update_listener(hass: HomeAssistant, entry: SolarFusionConfigEntry) -> None:
     """Handle options update."""
     await hass.config_entries.async_reload(entry.entry_id)
