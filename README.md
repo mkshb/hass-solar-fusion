@@ -97,7 +97,7 @@ All settings can be changed later via **Settings → Devices & Services → Sola
 
 and three shading options (see [Shading by sun position](#shading-by-sun-position)):
 - **Learn shading from hourly production** (default off)
-- **Apply learned shading to the forecast** (default on – has no effect until cells are learned)
+- **Apply learned shading to the forecast** (default on – has no effect until cells are learned, so turning on learning is enough; turn it off to inspect the learned map before it changes the forecast)
 - **Sources that already include a horizon profile** (default none), e.g. Open-Meteo with `use_horizon` enabled. These sources are neither corrected nor used for learning.
 
 ---

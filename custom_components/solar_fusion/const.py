@@ -96,6 +96,8 @@ STORAGE_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}_history"
 
 DEFAULT_SHADING_LEARN = False
+# Anwenden wirkt erst mit gelernten Zellen, also erst nach dem Einschalten des
+# Lernens – ein Schalter genügt. Aus nur, um die Karte vorher zu prüfen.
 DEFAULT_SHADING_APPLY = True
 # Wie lange Stunden-Ist und Stundenprognose je Tag für das Lernen aufbewahrt
 # werden. Etwas mehr als ein Jahr, damit jeder Sonnenstand einmal vorkommt.
