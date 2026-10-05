@@ -194,7 +194,7 @@ The `forecast` attribute contains both days in a single dict, keyed by ISO hour 
 
 ### Forecast – Uncertainty
 
-State: weighted standard deviation of the sources' raw daily forecasts as % of the fused daily total, averaged over today and tomorrow. `unknown` with only one source (no cross-validation).
+State: weighted standard deviation of the sources' raw daily forecasts as % of the fused daily total, averaged over today and tomorrow. With shading applied, each raw total is reduced by the source's shaded share first, so both sides are on the same basis. `unknown` with only one source (no cross-validation).
 
 | Range | Interpretation |
 |-------|---------------|
@@ -468,9 +468,10 @@ Every update interval:
      without undoing the hourly shading)
 
   Uncertainty:
-  6. Weighted standard deviation of the sources' raw daily totals,
-     expressed as % of the fused daily total (average of today and
-     tomorrow; none with a single source)
+  6. Weighted standard deviation of the sources' raw daily totals
+     (times their kept share after shading), expressed as % of the
+     fused daily total (average of today and tomorrow; none with a
+     single source)
 
   Nightly (after midnight, on first update of the new day):
   7. Read yesterday's actual production from HA recorder

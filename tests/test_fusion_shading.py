@@ -85,6 +85,23 @@ def test_slot_factor_applied_and_daily_total_follows():
     assert all(r < 1.0 for r in ratios.values())
 
 
+def test_uncertainty_uses_shaded_daily_totals():
+    readings = [_reading("open_meteo_solar_forecast", 38.0), _reading("solcast", 41.0)]
+    _, plain_pct, _ = _engine(shading_apply=False).fuse(readings, TODAY)
+    engine = _engine()
+    shaded, shaded_pct, weights = engine.fuse(readings, TODAY)
+    ratios = engine.last_shading_ratios[TODAY.isoformat()]
+    assert all(r < 1.0 for r in ratios.values())
+    expected = calc.weighted_spread_pct(
+        {"open_meteo_solar_forecast": 38.0 * ratios["open_meteo_solar_forecast"],
+         "solcast": 41.0 * ratios["solcast"]},
+        weights, sum(shaded.values()) / 1000.0,
+    )
+    assert shaded_pct == expected
+    # Gleiche Basis wie die fusionierte Summe: die Streuung wächst nicht um 1/Anteil
+    assert abs(shaded_pct - plain_pct) <= 0.2
+
+
 def test_tomorrow_corrected_too():
     readings = [_reading("solcast", 41.0, tomorrow_kwh=35.0)]
     plain, _, _ = _engine(shading_apply=False).fuse(readings, TOMORROW)
